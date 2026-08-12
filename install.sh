@@ -2,7 +2,7 @@
 # install.sh — clash-pick 一键安装（macOS / Linux，只装工具，不装 skill）
 #
 # 用法（终端一行）：
-#   curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main/install.sh | sh
 #
 # 效果：
 #   - 安装 clash-pick.mjs + clash-pick 命令到 ~/.local/bin 并加入 PATH
@@ -10,7 +10,7 @@
 #   - 只装工具；skill 由各 agent 工具单独部署（deploy-agents.ps1，需要 pwsh）
 set -e
 
-REPO=https://raw.githubusercontent.com/likangdi-code/clash-pick/main
+REPO=https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main
 INSTALL_DIR="${HOME}/.local/bin"
 
 # 1. 前置检查：Node.js

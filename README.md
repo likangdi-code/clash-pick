@@ -62,13 +62,13 @@ curl --proxy http://127.0.0.1:7897 -L -o big-file.zip "https://example.com/big-f
 **Windows**（PowerShell 终端一行）：
 
 ```powershell
-irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main/install.ps1 | iex
 ```
 
 **macOS / Linux**（终端一行）：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main/install.sh | sh
 ```
 
 安装后新开终端即可用 `clash-pick`。需要 Node.js（≥18）。本脚本**只装工具、不装 skill**。
@@ -158,7 +158,7 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 零 npm 依赖的 Node 脚本，无需构建：
 
 ```bash
-git clone https://github.com/likangdi-code/clash-pick
+git clone https://github.com/likangdi-code/clash-pick-cli
 cd clash-pick
 node clash-pick.mjs list        # 直接运行
 ```

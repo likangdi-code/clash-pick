@@ -2,7 +2,7 @@
   install.ps1 — clash-pick 工具一键安装（只装工具本体，不装 skill）
 
   用法（PowerShell 终端粘贴一行即可）：
-    irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main/install.ps1 | iex
 
   效果：
     - 把 clash-pick.mjs + clash-pick.cmd 安装到 %LOCALAPPDATA%\Programs\clash-pick
@@ -17,7 +17,7 @@
 #>
 $ErrorActionPreference = 'Stop'
 
-$repoBase = 'https://raw.githubusercontent.com/likangdi-code/clash-pick/main'
+$repoBase = 'https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main'
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\clash-pick'
 
 # 1. 前置检查：需要 Node.js（clash-pick 是零依赖 Node 脚本）

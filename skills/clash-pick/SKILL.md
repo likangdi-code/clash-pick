@@ -20,7 +20,7 @@ description: >
 3. `clash-pick` 命令可用。检查：PowerShell 里 `Get-Command clash-pick`。
    没有 → 一键安装：
    ```powershell
-   irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 | iex
+   irm https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main/install.ps1 | iex
    ```
 
 ## 先判断 Clash 是否在运行（未运行则跳过测速）
@@ -37,6 +37,18 @@ clash-pick list
   2. 或直接**直连下载**（不经代理）。若直连下载失败/太慢，再回头让用户启动 clash 后重新选节点。
 
 > 只有 clash 在线时才需要测速选节点；clash 离线时测速毫无意义（还会报连接错误浪费时间）。
+
+## 时序要求：先选节点，后下载（强制）
+
+**当你要下载一个链接、且决定用 clash-pick 选节点时，必须严格按顺序执行——不得提前下载、不得跳过选节点、不得与选节点并行发起下载：**
+
+1. **先**运行 `clash-pick add <下载URL> --json`（或 `pick`），**等它执行完、拿到结果**。
+2. 从返回结果里**确认节点已选好**（`switched: true` / `bestNode` 非空，人类可读模式会打印「下载: curl ...」这一行指令）。
+3. **然后**才发起下载——用 CLI 返回的指令（`curl --proxy http://127.0.0.1:7897 -L -O ...`）或同端口的代理工具。
+
+**为什么**：mihomo 按「网址代理」规则把该域名的流量路由到选中的节点。**选节点必须先于下载完成**，否则下载流量会走错误的节点（或 GLOBAL 兜底），测速选最优节点就白做了。
+
+**何时可下载**：只有 clash-pick 成功返回（退出码 0，且 `switched` 或 `bestNode` 非空）才下载。失败（clash 离线 / 无可用节点）→ 不要硬下，按「先判断 Clash 是否在运行」处理。
 
 ## Agent 下载工作流（标准流程）
 
@@ -90,10 +102,10 @@ curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
 
 ## 边界
 
-- clash-pick **不建组**（建组需 Verge 增强文件 + reload）。全新域名想精准路由：先在 Verge「网址代理」页面添加该域名，再 `pick`。
+- `add` 会自动建组（写增强文件 + reload，走 Verge 命令桥）；`pick` 只对已建组测速切换。全新域名优先用 `add`。
 - 只测速**真实节点**，跳过策略组（Selector/URLTest/Fallback 等）。
 
 ## 参考
 
-- 仓库：https://github.com/likangdi-code/clash-pick（README 有完整说明）
+- 仓库：https://github.com/likangdi-code/clash-pick-cli（README 有完整说明）
 - 配套 GUI 项目（网址代理功能来源）：https://github.com/likangdi-code/clash-verge-url-proxy
