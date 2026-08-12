@@ -66,8 +66,8 @@ export function findAria2c() {
   return null
 }
 
-/** 用 aria2c 下载（继承 stdio 展示 aria2 自带进度条） */
-function runAria2c(url, { proxyPort, threads, output, dir, ariaPath, headers }) {
+/** 用 aria2c 下载（默认继承 stdio 展示 aria2 自带进度条；json 模式下静默避免污染输出） */
+function runAria2c(url, { proxyPort, threads, output, dir, ariaPath, headers, jsonMode }) {
   return new Promise((resolve) => {
     const args = [
       '--auto-file-renaming=false',
@@ -87,14 +87,16 @@ function runAria2c(url, { proxyPort, threads, output, dir, ariaPath, headers }) 
 
     // Windows 下 aria2c 常以 aria2c.exe 存在，.cmd/.bat 包装时需走 cmd shell
     const isBat = process.platform === 'win32' && /\.(cmd|bat)$/i.test(ariaPath ?? 'aria2c')
+    // json 模式下静默（aria2c 进度输出会污染 stdout 的 JSON）；非 json 继承 stdio 展示进度
+    const stdio = jsonMode ? 'ignore' : 'inherit'
     let child
     if (isBat) {
       // cmd 下 URL 可能含 & 等元字符：把每个参数用双引号包裹后拼成命令行，
       // 这样 cmd 把整个串当一个参数，避免 & 截断 / DEP0190 未转义警告
       const quoted = args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(' ')
-      child = spawn(`"${ariaPath}" ${quoted}`, { stdio: 'inherit', shell: true })
+      child = spawn(`"${ariaPath}" ${quoted}`, { stdio, shell: true })
     } else {
-      child = spawn(ariaPath ?? 'aria2c', args, { stdio: 'inherit' })
+      child = spawn(ariaPath ?? 'aria2c', args, { stdio })
     }
     child.on('error', (e) => resolve({ ok: false, engine: 'aria2c', error: e.message }))
     child.on('close', (code) => {
@@ -327,11 +329,23 @@ async function proxiedRequestRetry(urlStr, proxyPort, opts, retries = 2) {
 async function probe(urlStr, proxyPort, headers) {
   // 用 GET + Range: bytes=0-0 探测：同时拿 Content-Length / Accept-Ranges / 文件名 / 处理重定向
   const MAX_REDIRECT = 8
+  // 跨 host 重定向时需剥离敏感头：认证签名只对原域有效（如 api.github.com 302 → azure blob，
+  // 仍带 Authorization 会让目标 401）。剥离后返回给下载阶段复用。
+  const SENSITIVE_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie'])
+  const stripSensitive = (h) => {
+    if (!h) return h
+    const out = {}
+    for (const [k, v] of Object.entries(h)) if (!SENSITIVE_HEADERS.has(k.toLowerCase())) out[k] = v
+    return out
+  }
   let cur = urlStr
+  let effectiveHeaders = headers
   for (let i = 0; i < MAX_REDIRECT; i++) {
-    const res = await proxiedRequestRetry(cur, proxyPort, { range: 'bytes=0-0', headers })
+    const res = await proxiedRequestRetry(cur, proxyPort, { range: 'bytes=0-0', headers: effectiveHeaders })
     if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-      cur = new URL(res.headers.location, cur).toString()
+      const next = new URL(res.headers.location, cur)
+      if (next.host !== new URL(cur).host) effectiveHeaders = stripSensitive(effectiveHeaders)
+      cur = next.toString()
       res.stream.resume() // 丢弃探测 body
       continue
     }
@@ -356,6 +370,7 @@ async function probe(urlStr, proxyPort, headers) {
       acceptsRange: res.headers['accept-ranges'] === 'bytes' || !!cr,
       disposition: res.headers['content-disposition'],
       statusCode: res.statusCode,
+      headers: effectiveHeaders,
     }
   }
   throw new Error('重定向次数过多')
@@ -368,9 +383,13 @@ async function probe(urlStr, proxyPort, headers) {
  */
 export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir = '.', onProgress, headers } = {}) {
   const info = await probe(urlStr, proxyPort, headers)
+  // probe 跨 host 重定向后可能已剥离敏感头，下载阶段复用剥离后的 headers（避免把
+  // Authorization 打到签名/Blob 域名返回 401）
+  const effHeaders = info.headers ?? headers
   if (info.statusCode >= 400) throw new Error(`HTTP ${info.statusCode}（服务器返回错误）`)
   const filename = output ?? guessFilename(info.url, info.disposition)
-  const filePath = path.join(dir, filename)
+  // -o 传绝对路径时直接用；相对路径/未指定时拼到 -d 目录（默认当前目录）
+  const filePath = filename && path.isAbsolute(filename) ? filename : path.join(dir, filename)
   const started = Date.now()
 
   const cleanPath = (p) => {
@@ -399,7 +418,7 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
 
   // 单线程流式下载（也用于非公开 URL 降级）
   const downloadSingle = async () => {
-    const res = await proxiedRequestRetry(info.url, proxyPort, { headers })
+    const res = await proxiedRequestRetry(info.url, proxyPort, { headers: effHeaders })
     if (res.statusCode >= 400) throw new Error(`HTTP ${res.statusCode}`)
     await fs.promises.mkdir(dir, { recursive: true })
     const ws = fs.createWriteStream(filePath)
@@ -471,7 +490,7 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
             else startOne()
           })
           ws.on('error', (e) => { if (!errored) { errored = e; rejectPromise(e) } })
-          proxiedRequestRetry(info.url, proxyPort, { range: `bytes=${start}-${end}`, headers }).then((res) => {
+          proxiedRequestRetry(info.url, proxyPort, { range: `bytes=${start}-${end}`, headers: effHeaders }).then((res) => {
             if ([401, 403, 429].includes(res.statusCode)) { forbidden = true; res.stream.resume(); rejectPromise(new Error(`分片 ${idx} HTTP ${res.statusCode}`)); return }
             if (res.statusCode >= 400) throw new Error(`分片 ${idx} HTTP ${res.statusCode}`)
             res.stream.pipe(ws)
@@ -524,11 +543,11 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
  * @param {string} urlStr
  * @param {{proxyPort:number|null, threads?:number, output?:string, dir?:string, forceNode?:boolean, headers?:Object, onProgress?:Function}} opts
  */
-export async function download(urlStr, { proxyPort, threads = 8, output, dir = '.', forceNode = false, headers, onProgress } = {}) {
+export async function download(urlStr, { proxyPort, threads = 8, output, dir = '.', forceNode = false, headers, jsonMode, onProgress } = {}) {
   const aria = forceNode ? null : findAria2c()
   if (aria) {
-    // aria2c 自带进度条（stdio inherit），不重复 onProgress
-    return runAria2c(urlStr, { proxyPort, threads, output, dir, ariaPath: aria, headers })
+    // aria2c 自带进度条（非 json 继承 stdio）；json 模式静默避免污染输出
+    return runAria2c(urlStr, { proxyPort, threads, output, dir, ariaPath: aria, headers, jsonMode })
   }
   return downloadNode(urlStr, { proxyPort, threads, output, dir, headers, onProgress })
 }
@@ -567,9 +586,13 @@ async function main() {
   if (headerList.length) opts.headers = parseHeaders(headerList)
 
   let last = null
-  const res = await download(urlStr, { ...opts, onProgress: (p) => { last = p } })
+  const res = await download(urlStr, { ...opts, jsonMode: opts.json, onProgress: (p) => { last = p } })
   if (res.ok && !res.filePath && res.engine === 'aria2c') {
-    if (!opts.json) console.log('✓ aria2c 下载完成（退出码 0）')
+    if (opts.json) {
+      console.log(JSON.stringify({ ok: true, engine: 'aria2c', filePath: null, bytes: null, threads: opts.threads, durationMs: null }))
+    } else {
+      console.log('✓ aria2c 下载完成（退出码 0）')
+    }
     process.exit(0)
   }
   if (res.ok) {
