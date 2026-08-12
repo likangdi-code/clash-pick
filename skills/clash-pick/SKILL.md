@@ -106,7 +106,9 @@ curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
 
 常用选项：`--timeout 6000`（测速超时，下载慢时加大）、`--concurrency 16`（并发）、`--group <组名>`（显式指定切换组）、`--json`。
 
-`dl`/`clash-dl` 专属选项：`-o <文件>`（输出文件名）、`-d <目录>`（保存目录）、`-t <n>`（并发线程数，默认 8）、`--no-proxy`（直连，不选节点）、`--force-node`（强制内置 Node 下载器，不用 aria2c）。
+`dl`/`clash-dl` 专属选项：`-o <文件>`（输出文件名）、`-d <目录>`（保存目录）、`-t <n>`（并发线程数，默认 8）、`-H/--header "Name: value"`（自定义 HTTP 头，可多次，非公开 URL 认证用）、`--no-proxy`（直连，不选节点）、`--force-node`（强制内置 Node 下载器，不用 aria2c）。
+
+**非公开 URL**：下载需要认证的文件时加 `-H` 指定认证头（如 `Authorization: Bearer <token>` / `Cookie`）。一次性签名/受限 URL 多线程分片遇 401/403/429 时自动降级单线程，文件仍完整下载，不会整体失败。
 
 ## 常见场景
 
@@ -114,6 +116,7 @@ curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
 - **无法直连的域名**：先看 `clash-pick list` 里有没有该域名已建的网址代理组；没有就 `dl`/`pick`（回退 GLOBAL）并提示用户可在 Verge 里建组。
 - **大文件/多线程下载**：`clash-dl <url> -t 8` 或 `clash-pick dl <url> -t 8` 走代理多线程分片下载（内置 Node 下载器；装了 aria2c 自动用 aria2c 多连接）。中断后重跑同 URL 同目录自动断点续传。
 - **Clash 离线时**：`clash-dl <url> --no-proxy` 直连多线程下载，不依赖 Clash。
+- **非公开 URL（需认证）**：`clash-dl <url> -H "Authorization: Bearer <token>"` 或 `-H "Cookie: ..."`；一次性签名/受限 URL 分片遇 403 自动降级单线程。
 
 ## 排障
 

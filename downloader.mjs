@@ -8,12 +8,19 @@
  *   2. 没装 → 内置纯 Node 零依赖多线程下载器：
  *      - GET + Range 探测（Content-Length / Accept-Ranges / 文件名 / 重定向）
  *      - 支持 Range → 按 Range 分片并发下载到 .part 文件，完成后拼接
- *      - 不支持 Range 或大小未知 → 降级单线程流式下载
+ *      - 不支持 Range / 大小未知 / 需认证（401/403）→ 降级单线程流式下载
  *      - 走代理：http 用绝对 URI 直发代理端口；https 用 CONNECT 隧道 + TLS
  *      - 断点续传：已存在且大小匹配的 .part 分片自动跳过；完整文件命中直接完成
  *
+ * 非公开 URL（需认证）支持：
+ *   - --header "Name: value" 可多次指定（如 Authorization / Cookie），
+ *     探测、分片、单线程、aria2c 全部透传
+ *   - 一次性签名 / 受限 URL：多线程分片遇 401/403/429 自动清理降级单线程
+ *   - probe 遇 401/403 时给出「用 --header 指定认证头」的清晰提示
+ *
  * 用法（一般由 clash-pick.mjs dl 调用，也可独立使用）：
  *   node downloader.mjs <url> [--proxy-port 7897] [--threads 8] [-o 文件名] [-d 目录]
+ *   node downloader.mjs <url> --header "Authorization: Bearer <token>" --header "Cookie: a=b"
  *
  * 返回：Promise<{ok, engine, filePath, bytes, threads, durationMs, error?}>
  */
@@ -60,7 +67,7 @@ export function findAria2c() {
 }
 
 /** 用 aria2c 下载（继承 stdio 展示 aria2 自带进度条） */
-function runAria2c(url, { proxyPort, threads, output, dir, ariaPath }) {
+function runAria2c(url, { proxyPort, threads, output, dir, ariaPath, headers }) {
   return new Promise((resolve) => {
     const args = [
       '--auto-file-renaming=false',
@@ -73,6 +80,7 @@ function runAria2c(url, { proxyPort, threads, output, dir, ariaPath }) {
     ]
     if (proxyPort) args.push('--all-proxy', `http://127.0.0.1:${proxyPort}`)
     else args.push('--no-proxy', '*')
+    for (const [k, v] of Object.entries(headers ?? {})) args.push(`--header=${k}: ${v}`)
     if (output) args.push('-o', output)
     if (dir) args.push('-d', dir)
     args.push(url)
@@ -316,18 +324,25 @@ async function proxiedRequestRetry(urlStr, proxyPort, opts, retries = 2) {
   throw lastErr
 }
 
-async function probe(urlStr, proxyPort) {
+async function probe(urlStr, proxyPort, headers) {
   // 用 GET + Range: bytes=0-0 探测：同时拿 Content-Length / Accept-Ranges / 文件名 / 处理重定向
   const MAX_REDIRECT = 8
   let cur = urlStr
   for (let i = 0; i < MAX_REDIRECT; i++) {
-    const res = await proxiedRequestRetry(cur, proxyPort, { range: 'bytes=0-0' })
+    const res = await proxiedRequestRetry(cur, proxyPort, { range: 'bytes=0-0', headers })
     if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
       cur = new URL(res.headers.location, cur).toString()
       res.stream.resume() // 丢弃探测 body
       continue
     }
     res.stream.resume() // 丢弃探测 body
+    // 非公开 URL：401/403 说明缺认证（或 URL 签名已失效），给出清晰提示
+    if (res.statusCode === 401 || res.statusCode === 403) {
+      const authNeeded = !headers || Object.keys(headers).length === 0
+      throw new Error(
+        `HTTP ${res.statusCode}（${authNeeded ? '非公开 URL 需要认证，请用 --header "Authorization: Bearer <token>" 等指定认证头' : '认证失败或签名过期，请检查 --header 提供的认证信息'}）`,
+      )
+    }
     const cr = res.headers['content-range'] // 'bytes 0-0/12345'
     let total = null
     if (cr) {
@@ -349,10 +364,10 @@ async function probe(urlStr, proxyPort) {
 /**
  * 内置多线程下载
  * @param {string} urlStr 目标 URL
- * @param {{proxyPort:number|null, threads:number, output?:string, dir?:string, onProgress?:Function, signal?:AbortSignal}} opts
+ * @param {{proxyPort:number|null, threads:number, output?:string, dir?:string, onProgress?:Function, headers?:Object, signal?:AbortSignal}} opts
  */
-export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir = '.', onProgress } = {}) {
-  const info = await probe(urlStr, proxyPort)
+export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir = '.', onProgress, headers } = {}) {
+  const info = await probe(urlStr, proxyPort, headers)
   if (info.statusCode >= 400) throw new Error(`HTTP ${info.statusCode}（服务器返回错误）`)
   const filename = output ?? guessFilename(info.url, info.disposition)
   const filePath = path.join(dir, filename)
@@ -362,12 +377,12 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
     try { if (fs.existsSync(p)) fs.unlinkSync(p) } catch {}
   }
   const partOf = (i) => `${filePath}.part${i}`
-  const report = (doneBytes) => {
+  const report = (doneBytes, threadsUsed) => {
     if (!onProgress) return
     onProgress({
       doneBytes,
       total: info.total,
-      threads: useMulti ? threads : 1,
+      threads: threadsUsed ?? 1,
       speed: formatSpeed(doneBytes, Date.now() - started),
       eta: info.total && doneBytes > 0 ? Math.round(((info.total - doneBytes) / doneBytes) * (Date.now() - started) / 1000) : null,
       filename,
@@ -382,17 +397,14 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
     return { ok: true, engine: 'node', filePath, bytes: info.total, threads: 1, durationMs: Date.now() - started, resumed: true }
   }
 
-  // 决定模式：不支持 Range / 大小未知 / 太小 → 单线程
-  const useMulti = !!info.acceptsRange && info.total != null && info.total >= 256 * 1024
-
-  if (!useMulti) {
-    // 单线程流式下载
-    const res = await proxiedRequestRetry(info.url, proxyPort)
+  // 单线程流式下载（也用于非公开 URL 降级）
+  const downloadSingle = async () => {
+    const res = await proxiedRequestRetry(info.url, proxyPort, { headers })
     if (res.statusCode >= 400) throw new Error(`HTTP ${res.statusCode}`)
     await fs.promises.mkdir(dir, { recursive: true })
     const ws = fs.createWriteStream(filePath)
     let done = 0
-    res.stream.on('data', (d) => { done += d.length; report(done) })
+    res.stream.on('data', (d) => { done += d.length; report(done, 1) })
     await new Promise((resolvePromise, rejectPromise) => {
       res.stream.pipe(ws)
       ws.on('finish', resolvePromise)
@@ -401,6 +413,10 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
     })
     return { ok: true, engine: 'node', filePath, bytes: done, threads: 1, durationMs: Date.now() - started }
   }
+
+  // 决定模式：不支持 Range / 大小未知 / 太小 → 单线程
+  const useMulti = !!info.acceptsRange && info.total != null && info.total >= 256 * 1024
+  if (!useMulti) return downloadSingle()
 
   // ─── 多线程 Range 分片并发（worker 池）───
   await fs.promises.mkdir(dir, { recursive: true })
@@ -429,8 +445,9 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
     }
   }
 
-  const timer = setInterval(() => report(doneBytes), 500)
+  const timer = setInterval(() => report(doneBytes, n), 500)
   let errored = null
+  let forbidden = false // 401/403/429 → 一次性签名/受限 URL，降级单线程
   try {
     await new Promise((resolvePromise, rejectPromise) => {
       let nextIdx = 0
@@ -449,12 +466,13 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
             doneBytes += end - start + 1
             activeCount--
             completed++
-            report(doneBytes)
+            report(doneBytes, n)
             if (completed === n) resolvePromise()
             else startOne()
           })
           ws.on('error', (e) => { if (!errored) { errored = e; rejectPromise(e) } })
-          proxiedRequestRetry(info.url, proxyPort, { range: `bytes=${start}-${end}` }).then((res) => {
+          proxiedRequestRetry(info.url, proxyPort, { range: `bytes=${start}-${end}`, headers }).then((res) => {
+            if ([401, 403, 429].includes(res.statusCode)) { forbidden = true; res.stream.resume(); rejectPromise(new Error(`分片 ${idx} HTTP ${res.statusCode}`)); return }
             if (res.statusCode >= 400) throw new Error(`分片 ${idx} HTTP ${res.statusCode}`)
             res.stream.pipe(ws)
             res.stream.on('error', (e) => { if (!errored) { errored = e; rejectPromise(e) } })
@@ -464,8 +482,18 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
       }
       startOne()
     })
+  } catch (e) {
+    // 捕获 worker 池异常（await 直接抛出会跳过降级检查），记录后走下方降级判定
+    errored = errored ?? e
   } finally {
     clearInterval(timer)
+  }
+
+  // 分片因认证/限流失败 → 一次性签名或受限 URL，清理分片后降级单线程完整下载
+  if (forbidden || (errored && /HTTP (401|403|429)/.test(errored.message))) {
+    for (let i = 0; i < n; i++) cleanPath(partOf(i))
+    if (fs.existsSync(filePath)) cleanPath(filePath)
+    return downloadSingle()
   }
   if (errored) throw errored
 
@@ -494,21 +522,32 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
 /**
  * 下载（混合引擎：优先 aria2c，缺失用内置 Node 下载器）
  * @param {string} urlStr
- * @param {{proxyPort:number|null, threads?:number, output?:string, dir?:string, forceNode?:boolean, onProgress?:Function}} opts
+ * @param {{proxyPort:number|null, threads?:number, output?:string, dir?:string, forceNode?:boolean, headers?:Object, onProgress?:Function}} opts
  */
-export async function download(urlStr, { proxyPort, threads = 8, output, dir = '.', forceNode = false, onProgress } = {}) {
+export async function download(urlStr, { proxyPort, threads = 8, output, dir = '.', forceNode = false, headers, onProgress } = {}) {
   const aria = forceNode ? null : findAria2c()
   if (aria) {
     // aria2c 自带进度条（stdio inherit），不重复 onProgress
-    return runAria2c(urlStr, { proxyPort, threads, output, dir, ariaPath: aria })
+    return runAria2c(urlStr, { proxyPort, threads, output, dir, ariaPath: aria, headers })
   }
-  return downloadNode(urlStr, { proxyPort, threads, output, dir, onProgress })
+  return downloadNode(urlStr, { proxyPort, threads, output, dir, headers, onProgress })
+}
+
+/** 解析 "Name: value" 字符串为 headers 对象（多个 header 用数组传入） */
+export function parseHeaders(list) {
+  const headers = {}
+  for (const h of list ?? []) {
+    const i = h.indexOf(':')
+    if (i > 0) headers[h.slice(0, i).trim()] = h.slice(i + 1).trim()
+  }
+  return headers
 }
 
 // ─── CLI 独立入口（node downloader.mjs <url> ...）─────────────────────────────
 async function main() {
   const argv = process.argv.slice(2)
-  const opts = { proxyPort: Number(process.env.CLASH_MIXED_PORT ?? 7897), threads: 8, output: null, dir: '.', forceNode: false, json: false }
+  const opts = { proxyPort: Number(process.env.CLASH_MIXED_PORT ?? 7897), threads: 8, output: null, dir: '.', forceNode: false, json: false, headers: null }
+  const headerList = []
   const positional = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -518,12 +557,14 @@ async function main() {
     else if (a === '-d') opts.dir = argv[++i]
     else if (a === '--no-proxy') opts.proxyPort = null
     else if (a === '--force-node') opts.forceNode = true
+    else if (a === '--header' || a === '-H') headerList.push(argv[++i])
     else if (a === '--json') opts.json = true
     else if (a.startsWith('-')) { console.error(`未知选项: ${a}`); process.exit(2) }
     else positional.push(a)
   }
   const urlStr = positional[0]
-  if (!urlStr) { console.error('用法: node downloader.mjs <url> [--proxy-port 7897] [--threads 8] [-o 文件] [-d 目录] [--no-proxy]'); process.exit(2) }
+  if (!urlStr) { console.error('用法: node downloader.mjs <url> [--proxy-port 7897] [--threads 8] [-o 文件] [-d 目录] [-H "Authorization: Bearer xxx"] [--no-proxy]'); process.exit(2) }
+  if (headerList.length) opts.headers = parseHeaders(headerList)
 
   let last = null
   const res = await download(urlStr, { ...opts, onProgress: (p) => { last = p } })

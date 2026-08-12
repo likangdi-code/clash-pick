@@ -146,6 +146,7 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 | `-o, --output <文件>` | 下载输出文件名（默认从 URL / Content-Disposition 推断） |
 | `-d, --dir <目录>` | 下载保存目录（默认当前目录） |
 | `-t, --threads <n>` | 并发线程数（默认 8） |
+| `-H, --header <头>` | 自定义 HTTP 头，可多次（非公开 URL 认证用，如 `"Authorization: Bearer xxx"`） |
 | `--no-proxy` | 直连下载，不走代理、不选节点 |
 | `--force-node` | 强制用内置 Node 下载器（不探测 aria2c） |
 
@@ -189,6 +190,22 @@ clash-pick dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d 
 - **优先 aria2c**：装了自动用满速多连接下载（aria2c 自带进度条）；没装则用内置 Node 下载器，无需任何额外安装。
 - **断点续传**：中断后重跑同 URL 同目录，未完成的分片（`.part*`）自动续传；已完整文件直接跳过。
 - **Clash 离线兜底**：`dl` 检测不到 Clash 时自动改直连下载（不报错卡住）；`--no-proxy` 可强制直连。
+- **非公开 URL（需认证）**：用 `-H/--header "Name: value"` 指定认证头（可多次），下载时自动透传给探测 / 分片 / 单线程 / aria2c。若目标是不支持多连接的一次性签名 / 受限 URL，多线程分片遇 401/403/429 会自动降级为单线程完整下载，避免整体失败。
+
+### 非公开 URL 下载示例
+
+```bash
+# 下载需要认证的文件（私有 GitHub Release / API / 签名 URL）
+clash-dl "https://example.com/private/file.zip" \
+  -H "Authorization: Bearer <token>" \
+  -H "Cookie: session=abc123"
+
+# 或走 clash-pick dl（选节点 + 下载一步）
+clash-pick dl "https://example.com/private/file.zip" -H "Authorization: Bearer <token>"
+
+# 一次性签名 / 受限 URL：多线程分片遇 403 时自动降级单线程，文件仍完整下载
+clash-dl "https://cdn.example.com/signed-url?sig=xxx"
+```
 
 **示例**：
 

@@ -31,6 +31,7 @@
  *   -o/--output <文件> 下载输出文件名（默认从 URL/Content-Disposition 推断）
  *   -d/--dir <目录>    下载保存目录（默认当前目录）
  *   -t/--threads <n>   并发线程数（默认 8，aria2c 为连接数）
+ *   -H/--header <头>   自定义 HTTP 头（可多次，非公开 URL 认证用，如 "Authorization: Bearer xxx"）
  *   --no-proxy         直连下载，不走代理、不选节点
  *   --force-node       强制用内置 Node 下载器（不探测 aria2c）
  *
@@ -48,7 +49,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { load as yamlLoad, dump as yamlDump } from './vendor/js-yaml.mjs'
-import { download as dlDownload, RETRYABLE_CODES } from './downloader.mjs'
+import { download as dlDownload, RETRYABLE_CODES, parseHeaders } from './downloader.mjs'
 
 // 跨平台 IPC：Windows 用命名管道，macOS/Linux 用 Clash Verge Rev 的 mihomo Unix socket
 // （路径来自 clash-verge-rev src-tauri/src/utils/dirs.rs: ipc_path()）
@@ -274,8 +275,9 @@ async function main() {
   const argv = process.argv.slice(2)
   const opts = {
     timeout: 5000, concurrency: 12, group: null, top: null, json: false, noSwitch: false,
-    output: null, dir: null, threads: 8, noProxy: false, forceNode: false,
+    output: null, dir: null, threads: 8, noProxy: false, forceNode: false, headers: null,
   }
+  const headerList = []
   const positional = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -290,9 +292,11 @@ async function main() {
     else if (a === '-t' || a === '--threads') opts.threads = Number(argv[++i])
     else if (a === '--no-proxy') opts.noProxy = true
     else if (a === '--force-node') opts.forceNode = true
+    else if (a === '-H' || a === '--header') headerList.push(argv[++i])
     else if (a.startsWith('-')) { console.error(`未知选项: ${a}`); process.exit(2) }
     else positional.push(a)
   }
+  if (headerList.length) opts.headers = parseHeaders(headerList)
 
   // 区分「隐式 pick」（clash-pick <url>）与「显式 pick」（clash-pick pick <url>）
   const rawCmd = positional[0] ?? ''
@@ -319,7 +323,7 @@ async function main() {
     process.exit(2)
   }
   if (cmd === 'dl') {
-    console.error('用法: node clash-pick.mjs dl <url> [-o 文件] [-d 目录] [-t 线程数] [--no-proxy] [--force-node] [--json]')
+    console.error('用法: node clash-pick.mjs dl <url> [-o 文件] [-d 目录] [-t 线程数] [-H "Authorization: Bearer xxx"] [--no-proxy] [--force-node] [--json]')
     process.exit(2)
   }
   console.error(`未知命令: ${cmd}`)
@@ -569,6 +573,7 @@ async function cmdDownload(url, opts) {
       output: opts.output,
       dir: opts.dir,
       forceNode: opts.forceNode,
+      headers: opts.headers,
       onProgress: render,
     })
   } catch (e) {
@@ -582,6 +587,7 @@ async function cmdDownload(url, opts) {
         output: opts.output,
         dir: opts.dir,
         forceNode: opts.forceNode,
+        headers: opts.headers,
         onProgress: render,
       })
     } else {
