@@ -359,6 +359,12 @@ async function cmdPick(url, opts, testOnly) {
 }
 
 main().catch((e) => {
-  console.error('clash-pick 错误:', e.message)
+  // 连接类错误 = Clash Verge Rev / mihomo 没在运行（命名管道不存在、HTTP 端口拒绝、管道被断）
+  if (['ENOENT', 'ECONNREFUSED', 'EPIPE', 'ECONNRESET'].includes(e?.code)) {
+    console.error(`⚠️ 未检测到 Clash 在运行（连接失败: ${e.message}）`)
+    console.error('已跳过测速。如需走代理选节点下载，请先启动 Clash Verge Rev。')
+  } else {
+    console.error('clash-pick 错误:', e.message)
+  }
   process.exit(1)
 })

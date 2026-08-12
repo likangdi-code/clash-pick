@@ -23,6 +23,21 @@ description: >
    irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 | iex
    ```
 
+## 先判断 Clash 是否在运行（未运行则跳过测速）
+
+调用 clash-pick 前先确认本机 mihomo 在线。**判断方法**：直接跑
+
+```bash
+clash-pick list
+```
+
+- 正常输出「内核 / 真节点 / 网址代理组」→ clash 在跑，继续下面的选节点流程。
+- 输出 `⚠️ 未检测到 Clash 在运行`（退出码非 0）→ **跳过测速，不要硬跑 `pick`**。此时二选一：
+  1. 告诉用户「Clash Verge Rev 未运行，无法走代理选节点」，请用户先启动 Clash Verge Rev；
+  2. 或直接**直连下载**（不经代理）。若直连下载失败/太慢，再回头让用户启动 clash 后重新选节点。
+
+> 只有 clash 在线时才需要测速选节点；clash 离线时测速毫无意义（还会报连接错误浪费时间）。
+
 ## Agent 下载工作流（标准流程）
 
 下载**任何需要走代理的文件**前，先选节点再下载：
