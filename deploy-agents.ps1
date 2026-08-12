@@ -1,21 +1,23 @@
 <#
   deploy-agents.ps1 — 把 clash-pick 的 Agent Skill 部署到本机各 AI agent 工具
 
-  覆盖工具（只要装了对应目录，就会把 SKILL.md 装到它的 skills 目录）：
-    Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池(.agents)
-
-  统一格式：所有工具都支持 Agent Skills 开放标准的 SKILL.md。
-  其中 ~/.agents/skills 是跨工具共享路径（Gemini/Codex/Grok 原生扫描它）。
+  覆盖工具（检测到对应目录就装；统一 SKILL.md 开放标准）：
+    claude / gemini / codex / opencode / hermes / openclaw / grok / agents(共享池 .agents)
 
   用法：
     powershell -ExecutionPolicy Bypass -File deploy-agents.ps1
-      # 默认从 GitHub raw 拉取 SKILL.md，部署到本机所有已装的 agent 工具
+        # 部署到本机【所有】已检测到的 agent 工具（默认从 GitHub raw 拉 SKILL.md）
+    powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
+        # 只装到【指定】工具（供某个 agent 自己给自己装 skill）
     powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -SourcePath .\skills\clash-pick\SKILL.md
-      # 用本地文件（离线/开发时）
+        # 用本地 SKILL.md（离线 / 开发时）
+
+  结束后会汇总「已安装到哪些」「未检测到哪些」，方便你确认还有哪些工具需要单独处理。
 #>
 param(
   [string]$SkillUrl = 'https://raw.githubusercontent.com/likangdi-code/clash-pick/main/skills/clash-pick/SKILL.md',
-  [string]$SourcePath = ''
+  [string]$SourcePath = '',
+  [string]$Agent = ''   # 只部署指定工具：claude/gemini/codex/opencode/hermes/openclaw/grok/agents
 )
 $ErrorActionPreference = 'Continue'
 $skillName = 'clash-pick'
@@ -38,46 +40,67 @@ if ($SourcePath) {
   }
 }
 
-# 2. 各 agent 工具的 检测目录 -> skills 目录
+# 2. 各 agent 工具： key -> (检测目录, skills 目录, 显示名)
 $targets = @(
-  @{ name = 'Claude Code'; dir = "$env:USERPROFILE\.claude";           skills = "$env:USERPROFILE\.claude\skills" },
-  @{ name = 'Gemini';      dir = "$env:USERPROFILE\.gemini";          skills = "$env:USERPROFILE\.gemini\skills" },
-  @{ name = 'Codex';       dir = "$env:USERPROFILE\.codex";           skills = "$env:USERPROFILE\.codex\skills" },
-  @{ name = 'OpenCode';    dir = "$env:USERPROFILE\.config\opencode"; skills = "$env:USERPROFILE\.config\opencode\skills" },
-  @{ name = 'Hermes';      dir = "$env:USERPROFILE\.hermes";          skills = "$env:USERPROFILE\.hermes\skills" },
-  @{ name = 'OpenClaw';    dir = "$env:USERPROFILE\.openclaw";        skills = "$env:USERPROFILE\.openclaw\skills" },
-  @{ name = 'Grok';        dir = "$env:USERPROFILE\.grok";            skills = "$env:USERPROFILE\.grok\skills" },
-  @{ name = '共享池 .agents'; dir = "$env:USERPROFILE\.agents";        skills = "$env:USERPROFILE\.agents\skills" }
+  @{ key = 'claude';    name = 'Claude Code'; dir = "$env:USERPROFILE\.claude";           skills = "$env:USERPROFILE\.claude\skills" },
+  @{ key = 'gemini';    name = 'Gemini';      dir = "$env:USERPROFILE\.gemini";          skills = "$env:USERPROFILE\.gemini\skills" },
+  @{ key = 'codex';     name = 'Codex';       dir = "$env:USERPROFILE\.codex";           skills = "$env:USERPROFILE\.codex\skills" },
+  @{ key = 'opencode';  name = 'OpenCode';    dir = "$env:USERPROFILE\.config\opencode"; skills = "$env:USERPROFILE\.config\opencode\skills" },
+  @{ key = 'hermes';    name = 'Hermes';      dir = "$env:USERPROFILE\.hermes";          skills = "$env:USERPROFILE\.hermes\skills" },
+  @{ key = 'openclaw';  name = 'OpenClaw';    dir = "$env:USERPROFILE\.openclaw";        skills = "$env:USERPROFILE\.openclaw\skills" },
+  @{ key = 'grok';      name = 'Grok';        dir = "$env:USERPROFILE\.grok";            skills = "$env:USERPROFILE\.grok\skills" },
+  @{ key = 'agents';    name = '共享池 .agents'; dir = "$env:USERPROFILE\.agents";         skills = "$env:USERPROFILE\.agents\skills" }
 )
 
+# 过滤：-Agent 指定了则只处理该工具
+if ($Agent) {
+  $targets = $targets | Where-Object { $_.key -eq $Agent }
+  if (-not $targets) {
+    Write-Error "未知工具: $Agent。可用：claude / gemini / codex / opencode / hermes / openclaw / grok / agents"
+    exit 1
+  }
+}
+
 Write-Host ''
-Write-Host "部署 clash-pick Skill 到各 agent 工具:" -ForegroundColor Cyan
-$installed = @()
-$skipped = @()
+$scope = if ($Agent) { "指定工具 [$Agent]" } else { '本机所有 agent 工具' }
+Write-Host "部署 clash-pick Skill 到 $scope：" -ForegroundColor Cyan
+
+$installed = @()   # { name, dest }
+$missing = @()     # { name, key, skillsDir } 工具未检测到
 foreach ($t in $targets) {
   if (Test-Path $t.dir) {
     $dest = Join-Path $t.skills $skillName
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Copy-Item $skillFile (Join-Path $dest 'SKILL.md') -Force
     Write-Host "  [✓] $($t.name)  ->  $dest" -ForegroundColor Green
-    $installed += $t.name
+    $installed += @{ name = $t.name; dest = $dest }
   } else {
-    Write-Host "  [–] $($t.name)  未安装，跳过" -ForegroundColor DarkGray
-    $skipped += $t.name
+    Write-Host "  [–] $($t.name)  未检测到（工具未安装），跳过" -ForegroundColor DarkGray
+    $missing += @{ name = $t.name; key = $t.key; skillsDir = $t.skills }
   }
 }
 
-# 3. 汇总与提示
+# 3. 汇总：已安装 / 未检测到（可能要单独安装 skill）
 Write-Host ''
-Write-Host "✓ 已部署到: $($installed -join ', ')" -ForegroundColor Green
-if ($skipped.Count) { Write-Host "未安装跳过: $($skipped -join ', ')" -ForegroundColor DarkGray }
+if ($installed.Count) {
+  Write-Host '✓ 已安装 skill 到：' -ForegroundColor Green -NoNewline
+  Write-Host (($installed | ForEach-Object { $_.name }) -join '、')
+} else {
+  Write-Host '✗ 未安装到任何工具。' -ForegroundColor Yellow
+}
+if ($missing.Count) {
+  Write-Host ''
+  Write-Host '⚠ 以下工具未检测到（对应 agent 未安装或目录不同），可能需要单独安装 skill：' -ForegroundColor Yellow
+  foreach ($m in $missing) {
+    Write-Host "  · $($m.name) — 装好该工具后重跑本脚本即可自动部署；或手动把 SKILL.md 复制到：$($m.skillsDir)\$skillName\SKILL.md"
+  }
+}
 
-if ($installed -contains 'Grok') {
-  Write-Host "  Grok 已装 ~/.grok/skills；且它兼容扫描 ~/.claude/skills 与 ~/.agents/skills（默认开启）。"
-}
-if (-not ($installed -contains 'Grok') -and -not ($skipped -contains 'Grok')) {
-  # Grok 未单独安装，但若 Claude/共享池已装，Grok 装好后会自动扫到
-  Write-Host "  Grok 未安装；装好后它会兼容扫描 ~/.claude/skills（若已装则自动生效）。"
-}
+# 4. 提示
 Write-Host ''
-Write-Host "提示：各 agent 需重启会话（或 /skills reload）后才会加载新 skill。" -ForegroundColor DarkGray
+if ($Agent) {
+  Write-Host "已完成 [$Agent] 的 skill 部署。" -ForegroundColor DarkGray
+} else {
+  Write-Host '提示：已装工具重启会话（或 /skills reload）后即可自主调用 clash-pick。' -ForegroundColor DarkGray
+  Write-Host '单个工具单独补装：powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent <claude|gemini|codex|opencode|hermes|openclaw|grok|agents>' -ForegroundColor DarkGray
+}

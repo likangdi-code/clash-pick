@@ -33,17 +33,32 @@ $ clash-pick pick "https://web.telegram.org"
 
 ## 核心功能
 
-### 一键安装
+### 安装工具（只装本体，不装 skill）
 
-Windows PowerShell 终端粘贴**一行命令**即完成部署（安装到 `%LOCALAPPDATA%\Programs\clash-pick` 并加入 PATH）：
+PowerShell 终端粘贴**一行命令**安装 clash-pick 工具（到 `%LOCALAPPDATA%\Programs\clash-pick` 并加入 PATH）：
 
 ```powershell
 irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 | iex
 ```
 
 安装后新开终端即可使用 `clash-pick`。需要 Node.js（≥18）。
+本脚本**只装工具、不装 skill**——skill 由各 agent 工具自行部署（见下）。适合 agent 帮助安装工具时使用。
 
-> ✨ 安装脚本还会把 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**——Claude Code、Gemini CLI、Codex、OpenCode、Hermes、OpenClaw、Grok、共享池 `~/.agents/skills`。它们在「下载 / 选节点 / 走代理」场景下会**自主调用** clash-pick，无需手动敲命令。想单独重装/补装：`powershell -ExecutionPolicy Bypass -File deploy-agents.ps1`。
+### 部署 skill 到各 agent（用户一键式，含汇总）
+
+把 clash-pick 的 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `~/.agents/skills`）。结束后会**汇总列出「已安装到哪些」「未检测到哪些」**，方便你确认还有哪些工具可能要单独安装 skill：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy-agents.ps1
+```
+
+只装到**指定**工具（供某个 agent 给自己装 skill）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude   # claude / gemini / codex / opencode / hermes / openclaw / grok / agents
+```
+
+装好后对应 agent 在「下载 / 选节点 / 走代理」场景下会**自主调用** clash-pick，无需手动敲命令。
 
 ### 使用教程（Agent 下载流程）
 

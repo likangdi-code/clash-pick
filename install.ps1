@@ -1,13 +1,19 @@
 <#
-  clash-pick 一键安装脚本（Windows / PowerShell）
+  install.ps1 — clash-pick 工具一键安装（只装工具本体，不装 skill）
 
-  用法（终端粘贴一行即可）：
+  用法（PowerShell 终端粘贴一行即可）：
     irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 | iex
 
   效果：
     - 把 clash-pick.mjs + clash-pick.cmd 安装到 %LOCALAPPDATA%\Programs\clash-pick
     - 把安装目录加入「用户 PATH」，当前与未来终端都能直接 `clash-pick`
     - 幂等：重复运行只覆盖更新，不产生重复 PATH 条目
+
+  ⚠️ 本脚本**只安装工具**，不装 skill。
+  skill（让 agent 自主调用 clash-pick）由各 agent 工具单独部署：
+    - 全部 agent 一键部署： powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\deploy-agents.ps1"
+    - 只装当前 agent（如 Claude Code）： powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\deploy-agents.ps1" -Agent claude
+  install.ps1 会把 deploy-agents.ps1 一并下载到安装目录（备用，不执行）。
 #>
 $ErrorActionPreference = 'Stop'
 
@@ -43,18 +49,27 @@ if (($userPath -split ';') -notcontains $installDir) {
     Write-Host "PATH 已包含安装目录，跳过" -ForegroundColor DarkGray
 }
 
-# 6. 部署 Agent Skill 到本机所有 AI agent 工具（Claude/Gemini/Codex/OpenCode/Hermes/OpenClaw/Grok/.agents）
+# 6. 下载 deploy-agents.ps1 到安装目录（skill 部署脚本，备用不执行）
 $depScript = Join-Path $installDir 'deploy-agents.ps1'
-Invoke-WebRequest -Uri "$repoBase/deploy-agents.ps1" -OutFile $depScript -UseBasicParsing
-Write-Host "调用 deploy-agents.ps1 部署 clash-pick Skill 到本机所有 agent 工具..." -ForegroundColor Cyan
-& $depScript
+if (-not (Test-Path $depScript)) {
+    Invoke-WebRequest -Uri "$repoBase/deploy-agents.ps1" -OutFile $depScript -UseBasicParsing
+    Write-Host "已下载 skill 部署脚本 -> $depScript（未执行）" -ForegroundColor DarkGray
+} else {
+    Write-Host "skill 部署脚本已存在，跳过下载" -ForegroundColor DarkGray
+}
 
 # 7. 立即在当前进程生效并自检
 $env:Path = $userPath + ';' + $installDir + ';' + $env:Path
 Write-Host ''
-Write-Host '✓ clash-pick 安装完成。' -ForegroundColor Green
-Write-Host '  新开一个终端（或执行 $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")）后可直接：'
+Write-Host '✓ clash-pick 工具安装完成（未安装 skill）。' -ForegroundColor Green
+Write-Host '  新开终端（或刷新 PATH）后可直接：'
 Write-Host '    clash-pick list'
 Write-Host '    clash-pick pick "https://example.com/big-file.zip"'
-Write-Host '    clash-pick --help'
-Write-Host '  Agent Skill 已装到 ~/.claude/skills/clash-pick，Claude Code 等 agent 重启会话后即可自主调用。'
+Write-Host ''
+Write-Host '▶ 部署 skill 到本机【所有】agent 工具：' -ForegroundColor Cyan
+Write-Host "    powershell -ExecutionPolicy Bypass -File `"$installDir\deploy-agents.ps1`""
+Write-Host '  只装到【当前】agent（如 Claude Code / Gemini / Codex ...）：' -ForegroundColor Cyan
+Write-Host "    powershell -ExecutionPolicy Bypass -File `"$installDir\deploy-agents.ps1`" -Agent claude"
+Write-Host '  可用的 -Agent 值：claude / gemini / codex / opencode / hermes / openclaw / grok / agents' -ForegroundColor DarkGray
+Write-Host '  skill 文件也可手动下载：' -ForegroundColor DarkGray
+Write-Host "    $repoBase/skills/clash-pick/SKILL.md" -ForegroundColor DarkGray
