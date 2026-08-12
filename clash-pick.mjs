@@ -12,7 +12,10 @@
  *
  * 用法：
  *   node clash-pick.mjs <url>                 # 测速 + 自动切最低延迟节点
+ *   node clash-pick.mjs pick <url>            # 同上（显式）
+ *   node clash-pick.mjs add <url>             # 自动建网址代理组 + 测速切换
  *   node clash-pick.mjs test <url>            # 只测速，不切换
+ *   node clash-pick.mjs dl <url>              # 测速切换后直接走代理多线程下载
  *   node clash-pick.mjs list                  # 列出节点与网址代理组
  *   node clash-pick.mjs current               # 查看当前选中
  *
@@ -24,11 +27,19 @@
  *   --json             输出 JSON
  *   --no-switch        只测速不切换
  *
+ * dl 子命令专属选项：
+ *   -o/--output <文件> 下载输出文件名（默认从 URL/Content-Disposition 推断）
+ *   -d/--dir <目录>    下载保存目录（默认当前目录）
+ *   -t/--threads <n>   并发线程数（默认 8，aria2c 为连接数）
+ *   --no-proxy         直连下载，不走代理、不选节点
+ *   --force-node       强制用内置 Node 下载器（不探测 aria2c）
+ *
  * 环境变量：
  *   CLASH_API     覆盖端点，如 http://127.0.0.1:9097（默认命名管道）
  *   CLASH_SECRET  HTTP 模式下的 secret（命名管道无需）
  *
  * 下载走代理：curl --proxy http://127.0.0.1:7897 -L -O <url>
+ * 多线程下载：clash-pick dl <url>（内置 Node 分片下载器；装了 aria2c 则自动用它）
  */
 import net from 'node:net'
 import http from 'node:http'
@@ -37,6 +48,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { load as yamlLoad, dump as yamlDump } from './vendor/js-yaml.mjs'
+import { download as dlDownload, RETRYABLE_CODES } from './downloader.mjs'
 
 // 跨平台 IPC：Windows 用命名管道，macOS/Linux 用 Clash Verge Rev 的 mihomo Unix socket
 // （路径来自 clash-verge-rev src-tauri/src/utils/dirs.rs: ipc_path()）
@@ -260,7 +272,10 @@ function pickBest(results) {
 
 async function main() {
   const argv = process.argv.slice(2)
-  const opts = { timeout: 5000, concurrency: 12, group: null, top: null, json: false, noSwitch: false }
+  const opts = {
+    timeout: 5000, concurrency: 12, group: null, top: null, json: false, noSwitch: false,
+    output: null, dir: null, threads: 8, noProxy: false, forceNode: false,
+  }
   const positional = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -270,6 +285,11 @@ async function main() {
     else if (a === '--top') opts.top = Number(argv[++i])
     else if (a === '--json') opts.json = true
     else if (a === '--no-switch') opts.noSwitch = true
+    else if (a === '-o' || a === '--output') opts.output = argv[++i]
+    else if (a === '-d' || a === '--dir') opts.dir = argv[++i]
+    else if (a === '-t' || a === '--threads') opts.threads = Number(argv[++i])
+    else if (a === '--no-proxy') opts.noProxy = true
+    else if (a === '--force-node') opts.forceNode = true
     else if (a.startsWith('-')) { console.error(`未知选项: ${a}`); process.exit(2) }
     else positional.push(a)
   }
@@ -277,9 +297,9 @@ async function main() {
   // 区分「隐式 pick」（clash-pick <url>）与「显式 pick」（clash-pick pick <url>）
   const rawCmd = positional[0] ?? ''
   let cmd, argUrl
-  if (['pick', 'test', 'add', 'list', 'current'].includes(rawCmd)) {
-    cmd = rawCmd
-    argUrl = ['test', 'pick', 'add'].includes(cmd) ? positional[1] : null
+  if (['pick', 'test', 'add', 'dl', 'download', 'list', 'current'].includes(rawCmd)) {
+    cmd = rawCmd === 'download' ? 'dl' : rawCmd
+    argUrl = ['test', 'pick', 'add', 'dl'].includes(cmd) ? positional[1] : null
   } else {
     cmd = 'pick' // 第一个位置参数就是 URL
     argUrl = rawCmd
@@ -288,6 +308,7 @@ async function main() {
   if (cmd === 'list') return cmdList()
   if (cmd === 'current') return cmdCurrent()
   if (cmd === 'add' && argUrl) return cmdAdd(argUrl, opts)
+  if (cmd === 'dl' && argUrl) return cmdDownload(argUrl, opts)
   if ((cmd === 'pick' || cmd === 'test') && argUrl) return cmdPick(argUrl, opts, cmd === 'test')
   if (cmd === 'pick' || cmd === 'test') {
     console.error(`用法: node clash-pick.mjs ${cmd} <url> [--group 组名] [--timeout ms] [--json]`)
@@ -295,6 +316,10 @@ async function main() {
   }
   if (cmd === 'add') {
     console.error('用法: node clash-pick.mjs add <url> [--timeout ms] [--json]')
+    process.exit(2)
+  }
+  if (cmd === 'dl') {
+    console.error('用法: node clash-pick.mjs dl <url> [-o 文件] [-d 目录] [-t 线程数] [--no-proxy] [--force-node] [--json]')
     process.exit(2)
   }
   console.error(`未知命令: ${cmd}`)
@@ -466,6 +491,135 @@ async function cmdPick(url, opts, testOnly) {
     console.log('   如需精准路由，请先用 `clash-pick add <url>` 自动建组。')
   }
   console.log(`下载: curl --proxy http://127.0.0.1:${process.env.CLASH_MIXED_PORT ?? DEFAULT_MIXED_PORT} -L -O '${url}'`)
+}
+
+/** 进度渲染：TTY 下用 \r 刷新一行，管道输出时只在开始时提示 */
+function makeProgressRenderer(jsonMode) {
+  let started = null
+  let lastRender = 0
+  return (p) => {
+    if (jsonMode) return // --json 模式不刷屏，最终一次性输出 JSON
+    if (!started) started = Date.now()
+    const now = Date.now()
+    if (now - lastRender < 300) return // 节流
+    lastRender = now
+    const pct = p.total && p.total > 0 ? Math.min(100, Math.round((p.doneBytes / p.total) * 100)) : '?'
+    const line = `\r⏬ ${p.filename}  ${pct}%  ${formatBytes(p.doneBytes)}/${p.total ? formatBytes(p.total) : '?'}  ${p.speed}  ${p.threads}线程`
+    process.stdout.write(line.padEnd(Math.min(process.stdout.columns ?? 100, 100)))
+  }
+}
+
+function formatBytes(n) {
+  if (n == null || isNaN(n)) return '?'
+  if (n >= 1 << 30) return (n / (1 << 30)).toFixed(2) + ' GiB'
+  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + ' MiB'
+  if (n >= 1 << 10) return (n / (1 << 10)).toFixed(0) + ' KiB'
+  return n + ' B'
+}
+
+/** dl：选节点（add 语义：无组自动建）+ 走代理多线程下载 */
+async function cmdDownload(url, opts) {
+  const { host, url: normalizedUrl } = parseHost(url)
+  let proxyPort = opts.noProxy ? null : Number(process.env.CLASH_MIXED_PORT ?? DEFAULT_MIXED_PORT)
+  let group = null
+  let best = null
+  let offline = false
+
+  if (!opts.noProxy) {
+    // 复用 add 语义：探测命中组，无则自动建，然后测速切换
+    try {
+      group = opts.group
+      if (!group) {
+        const rules = (await request('GET', '/rules')).json?.rules ?? []
+        group = detectUrlProxyGroup(rules, host)
+      }
+      // --json 模式：提示信息走 stderr，避免污染 stdout 的 JSON 输出
+      const log = (msg) => (opts.json ? console.error(msg) : console.log(msg))
+      if (!group) {
+        group = await createUrlProxyGroup(host)
+        if (group) log(`✓ 已创建网址代理组 ${group}（${host}）`)
+      }
+      if (group) {
+        const { best: b, candidates } = await testAndSwitch(group, host, normalizedUrl, opts, false)
+        best = b
+        if (best) log(`✓ 已切换 ${group} → ${best.name} (${best.delay} ms)`)
+        else log(`⚠ 组 ${group} 无可测节点，仍走代理下载（可能用 GLOBAL/兜底）`)
+      } else {
+        log('⚠ 未检测到可用节点，仍尝试走代理下载')
+      }
+    } catch (e) {
+      if (['ENOENT', 'ECONNREFUSED', 'EPIPE', 'ECONNRESET'].includes(e?.code)) {
+        console.error('⚠️ 未检测到 Clash 在运行（连接失败: ' + e.message + '）')
+        console.error('已跳过选节点，降级为直连下载。如需走代理，请先启动 Clash Verge Rev。')
+        proxyPort = null
+        offline = true
+      } else {
+        console.error('clash-pick 选节点失败:', e.message)
+        console.error('已跳过选节点，仍尝试走代理下载。')
+      }
+    }
+  }
+
+  const render = makeProgressRenderer(opts.json)
+  let res
+  try {
+    res = await dlDownload(normalizedUrl, {
+      proxyPort,
+      threads: opts.threads,
+      output: opts.output,
+      dir: opts.dir,
+      forceNode: opts.forceNode,
+      onProgress: render,
+    })
+  } catch (e) {
+    // 下载阶段连接类错误：代理端口不可用 / 管道中断 → 降级直连重试一次
+    if (proxyPort && RETRYABLE_CODES.has(e?.code)) {
+      const log = (msg) => (opts.json ? console.error(msg) : console.log(msg))
+      log(`⚠️ 走代理下载失败（${e.message}），降级为直连下载。`)
+      res = await dlDownload(normalizedUrl, {
+        proxyPort: null,
+        threads: opts.threads,
+        output: opts.output,
+        dir: opts.dir,
+        forceNode: opts.forceNode,
+        onProgress: render,
+      })
+    } else {
+      throw e
+    }
+  }
+
+  if (opts.json) {
+    console.log(JSON.stringify({
+      ok: res.ok,
+      host,
+      url: normalizedUrl,
+      group,
+      bestNode: best?.name ?? null,
+      bestDelay: best?.delay ?? null,
+      proxy: proxyPort ? `http://127.0.0.1:${proxyPort}` : null,
+      engine: res.engine ?? null,
+      filePath: res.filePath ?? null,
+      bytes: res.bytes ?? null,
+      threads: res.threads ?? null,
+      durationMs: res.durationMs ?? null,
+      error: res.error ?? (res.exitCode != null ? `aria2c 退出码 ${res.exitCode}` : null),
+    }))
+    process.exit(res.ok ? 0 : 1)
+  }
+
+  if (res.ok) {
+    process.stdout.write('\r\x1b[K')
+    if (res.filePath) {
+      console.log(`✓ 下载完成  ${res.filePath}  ${formatBytes(res.bytes)}  （${res.engine} ${res.threads} 线程, ${(res.durationMs / 1000).toFixed(1)}s）`)
+    } else {
+      console.log('✓ aria2c 下载完成')
+    }
+  } else {
+    process.stdout.write('\r\x1b[K')
+    console.error(`✗ 下载失败: ${res.error ?? `aria2c 退出码 ${res.exitCode}`}`)
+    process.exit(1)
+  }
 }
 
 main().catch((e) => {

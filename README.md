@@ -1,6 +1,6 @@
 # 🔀 Clash Pick
 
-给 **agent / 脚本** 用的 mihomo 节点选择 CLI。**下载前为任意 URL 自动测出延迟最低的节点并切换**，随后走代理下载。可**自动建「网址代理」组**（配合 Clash Verge 网址代理版），也可复用已建好的组。
+给 **agent / 脚本** 用的 mihomo 节点选择 CLI。**下载前为任意 URL 自动测出延迟最低的节点并切换**，随后走代理下载。可**自动建「网址代理」组**（配合 Clash Verge 网址代理版），也可复用已建好的组。**`dl` 命令把「选节点」和「多线程下载」合成一步**，下载前自动切最优节点、再用多线程引擎下载（自带零依赖 Node 分片下载器，装了 aria2c 则自动升级为 aria2c 满速下载）。
 
 ## 简介
 
@@ -13,6 +13,7 @@ Clash Pick 是一个 **Node 零 npm 依赖** 的命令行工具，直接连接 [
                                         切到延迟最低的节点
                                                 │
                                   curl --proxy http://127.0.0.1:7897 -L -O <url>
+                                  clash-pick dl <url>（选节点 + 多线程下载一步完成）
 ```
 
 ## Preview
@@ -40,12 +41,17 @@ Clash Pick 与 [Clash Verge（网址代理版）](https://github.com/likangdi-co
 **联合工作流（AI agent 下载场景）**：
 
 ```bash
-# 1. agent 拿到下载链接，全自动建组 + 选最优节点（Verge 在跑即可）
+# 0. 最快方式：选节点 + 多线程下载一步完成（推荐）
+clash-pick dl "https://example.com/big-file.zip" --json
+#    → 自动建 URL-Proxy-* 组 + 测速切最优节点 + 走代理多线程下载，一次搞定
+
+# 1. 或分步：agent 拿到下载链接，全自动建组 + 选最优节点（Verge 在跑即可）
 clash-pick add "https://example.com/big-file.zip" --json
 #    → 该域名没建过组时自动建 URL-Proxy-* 组（写增强文件 + reload，命令桥完成）
 
 # 2. 走 mihomo 混入端口下载（命中网址代理规则 → 走刚选中的节点）
 curl --proxy http://127.0.0.1:7897 -L -o big-file.zip "https://example.com/big-file.zip"
+#    或：clash-pick dl "https://example.com/big-file.zip"（内置多线程下载器）
 
 # 3. 打开 Clash Verge 的「网址代理」页 → 能看到刚才自动建的组，随时手动调整节点
 ```
@@ -98,23 +104,28 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 
 ## 使用教程（Agent 下载流程）
 
-1. **全自动建组 + 选节点**：
+1. **一键选节点 + 多线程下载**（推荐）：
+   ```bash
+   clash-pick dl "https://example.com/big-file.zip"   # 建组(无则) + 切最优节点 + 走代理多线程下载
+   ```
+2. **分步**：先建组选节点，再下载：
    ```bash
    clash-pick add "https://example.com/big-file.zip"   # 没建过组 → 自动建；已建 → 复用
    ```
    或仅对已建组测速切换：`clash-pick pick "https://example.com/big-file.zip"`
-2. 走 mihomo 混入端口下载：
+3. 走 mihomo 混入端口下载：
    ```bash
    curl --proxy http://127.0.0.1:7897 -L -o big-file.zip "https://example.com/big-file.zip"
    ```
 
 ## 核心功能
 
-- **子命令**：`add <url>`（自动建组 + 测速切换）、`pick <url>`（测速切换已有组）、`test <url>`（只测速）、`list`、`current`
+- **子命令**：`add <url>`（自动建组 + 测速切换）、`pick <url>`（测速切换已有组）、`test <url>`（只测速）、`dl <url>`（选节点 + 多线程下载一步完成）、`list`、`current`
 - **`--json` 输出**：机器可读（bestNode / bestDelay / group / top），供 agent 程序化解析
 - **自动命中网址代理组**：从 mihomo `/rules` 探测 `DOMAIN-SUFFIX` 规则 → `URL-Proxy-*` 组；命中多个取最具体的域名
 - **无命中回退 GLOBAL**：未建组的域名切 GLOBAL（rule 模式下未匹配规则的流量走它）
 - **针对 URL 精确测速**：`GET /proxies/{name}/delay?url=<url>`
+- **`dl` 一体化下载**：选完节点直接用多线程引擎下载（见下「多线程下载引擎」）
 
 ### 选项与环境变量
 
@@ -127,6 +138,16 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 | `--json` | 输出 JSON |
 | `--no-switch` | 只测速不切换 |
 
+`dl` 专属选项：
+
+| 选项 | 说明 |
+|---|---|
+| `-o, --output <文件>` | 下载输出文件名（默认从 URL / Content-Disposition 推断） |
+| `-d, --dir <目录>` | 下载保存目录（默认当前目录） |
+| `-t, --threads <n>` | 并发线程数（默认 8） |
+| `--no-proxy` | 直连下载，不走代理、不选节点 |
+| `--force-node` | 强制用内置 Node 下载器（不探测 aria2c） |
+
 | 环境变量 | 说明 |
 |---|---|
 | `CLASH_API` | 覆盖端点，如 `http://127.0.0.1:9097`（默认命名管道 / Unix socket） |
@@ -135,6 +156,43 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 | `CLASH_SECRET` | HTTP 模式下的 secret（socket/pipe 传输无需 secret） |
 | `CLASH_MIXED_PORT` | 下载命令提示的代理端口（默认 7897） |
 
+## 多线程下载引擎（`dl` 命令）
+
+`clash-pick dl <url>` 把「选节点」和「下载」合并成一步：**先自动建组 / 复用组 + 测速切换最低延迟节点，再走代理多线程下载**。
+
+引擎采用**混合方案**：
+
+| 引擎 | 触发条件 | 能力 |
+|---|---|---|
+| **aria2c** | 系统中检测到 aria2c（PATH 或常见安装目录） | 多连接（`-x`）、分片（`-s -k`）、断点续传（`-c`）、走代理（`--all-proxy`）。业界标准，Motrix / imFile 等均基于它 |
+| **内置 Node 下载器** | 未装 aria2c（零依赖兜底） | HTTP Range 分片并发下载到 `.part`，完成后拼接；断点续传（完整分片自动跳过）；不支持 Range 或大小未知时自动降级单线程；支持 http 直发代理 / https CONNECT 隧道 |
+
+- **优先 aria2c**：装了自动用满速多连接下载（aria2c 自带进度条）；没装则用内置 Node 下载器，无需任何额外安装。
+- **断点续传**：中断后重跑同 URL 同目录，未完成的分片（`.part*`）自动续传；已完整文件直接跳过。
+- **Clash 离线兜底**：`dl` 检测不到 Clash 时自动改直连下载（不报错卡住）；`--no-proxy` 可强制直连。
+
+**示例**：
+
+```bash
+# 建组 + 选最优节点 + 走代理多线程下载（一步完成）
+clash-pick dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d ~/Downloads -t 8
+
+# 已装 aria2c 时同上，自动用 aria2c 多连接满速下载
+# 强制用内置 Node 下载器：
+clash-pick dl "https://example.com/file.bin" --force-node
+
+# 不需要代理，直连多线程下载：
+clash-pick dl "https://example.com/file.bin" --no-proxy
+
+# 机器可读输出（供 agent 解析）：
+clash-pick dl "https://example.com/file.bin" --json
+```
+
+> **可选安装 aria2c**（获得更快的多连接下载）：
+> - Windows：`winget install aria2.aria2` 或到 [aria2 Releases](https://github.com/aria2/aria2/releases) 下载
+> - macOS：`brew install aria2`
+> - Linux：`sudo apt install aria2`（Debian/Ubuntu）或 `sudo dnf install aria2`（Fedora）
+
 ## 特性
 
 - **零配置**：走 Verge 命名管道 / Unix socket，免开 external controller、免 secret
@@ -142,6 +200,7 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 - **针对 URL 精确测速**，而不是用固定测试站
 - **并发测速**（默认 12 路），全节点秒出结果
 - **自动建组**：`add` 全自动写增强文件 + reload（走 Verge 命令桥）
+- **`dl` 一体化多线程下载**：选节点 + 下载一步完成，aria2c 有则用、无则内置 Node 分片下载
 - **`--json`** 结构化输出，天然适配 agent 工具调用
 - **幂等安装脚本**：重复运行只更新不产生重复 PATH 条目
 

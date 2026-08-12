@@ -10,7 +10,8 @@ description: >
 
 # Clash Pick — 下载前为 URL 选最低延迟节点
 
-给 agent 用的下载前置工具：**针对下载链接，自动测出延迟最低的代理节点并切换，再用代理下载**。
+给 agent 用的下载工具：**针对下载链接，自动测出延迟最低的代理节点并切换，再用代理下载**。
+可用 `dl` 把「选节点 + 多线程下载」一步完成，也可只选节点（`add`/`pick`）后自行 curl。
 复用 Clash Verge Rev「网址代理」建好的组与规则。
 
 ## 前置条件（不满足先装）
@@ -42,9 +43,12 @@ clash-pick list
 
 **当你要下载一个链接、且决定用 clash-pick 选节点时，必须严格按顺序执行——不得提前下载、不得跳过选节点、不得与选节点并行发起下载：**
 
+**首选 `dl`（内置顺序保证）**：`clash-pick dl <下载URL> --json` 内部就是「先建组/复用组 + 测速切节点，全部完成后才开始下载」，天然满足时序要求，无需分步。
+
+若分步（`add`/`pick` + curl）：
 1. **先**运行 `clash-pick add <下载URL> --json`（或 `pick`），**等它执行完、拿到结果**。
 2. 从返回结果里**确认节点已选好**（`switched: true` / `bestNode` 非空，人类可读模式会打印「下载: curl ...」这一行指令）。
-3. **然后**才发起下载——用 CLI 返回的指令（`curl --proxy http://127.0.0.1:7897 -L -O ...`）或同端口的代理工具。
+3. **然后**才发起下载——用 CLI 返回的指令（`curl --proxy http://127.0.0.1:7897 -L -O ...`）或同端口的代理工具，或再跑 `clash-pick dl <下载URL>`。
 
 **为什么**：mihomo 按「网址代理」规则把该域名的流量路由到选中的节点。**选节点必须先于下载完成**，否则下载流量会走错误的节点（或 GLOBAL 兜底），测速选最优节点就白做了。
 
@@ -52,7 +56,16 @@ clash-pick list
 
 ## Agent 下载工作流（标准流程）
 
-下载**任何需要走代理的文件**前，先选节点再下载。**优先用 `add`**——该域名没建过网址代理组时自动建组（写增强文件 + reload，走 Verge 命令桥；Verge 在跑即可）：
+下载**任何需要走代理的文件**，最省事的做法是**一步到位**用 `dl`：选节点 + 多线程下载一次完成。
+
+```bash
+# 0. 推荐：选节点 + 走代理多线程下载一步完成
+#    → 该域名没建过组时自动建 URL-Proxy-* 组；再测速切最优节点；最后直接下载
+clash-pick dl "<下载URL>" --json
+#    结果里 engine / filePath / bytes / durationMs 为下载信息
+```
+
+分步（需要拿到节点信息再自行处理时）：
 
 ```bash
 # 1a. 全自动：为 URL 建网址代理组（已存在则复用）+ 测速切换最低延迟节点
@@ -65,9 +78,10 @@ clash-pick pick "<下载URL>" --json
 
 # 3. 走 mihomo 混入端口下载（命中网址代理规则 → 流量走刚选中的节点）
 curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
+#    或继续用多线程下载：clash-pick dl "<下载URL>" --json
 ```
 
-`--json` 返回字段（供 agent 程序化解析）：
+`add`/`pick` 的 `--json` 返回字段（供 agent 程序化解析）：
 ```json
 {"ok":true,"host":"github.com","group":"GLOBAL","isUrlProxy":false,
  "bestNode":"🇯🇵 日本02","bestDelay":70,"switched":true,
@@ -80,18 +94,23 @@ curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
 
 | 命令 | 说明 |
 |---|---|
-| `clash-pick pick <url>` | 测速 + 自动切换最低延迟节点（推荐） |
+| `clash-pick dl <url>` | 选节点 + 走代理多线程下载一步完成（推荐） |
+| `clash-pick add <url>` | 自动建组 + 测速切换最低延迟节点（分步流程第一步） |
+| `clash-pick pick <url>` | 测速 + 自动切换已有组 |
 | `clash-pick test <url>` | 只测速不切换（看节点快慢） |
 | `clash-pick list` | 列真节点、网址代理组、域名→组规则 |
 | `clash-pick current` | 看 GLOBAL 与各网址代理组当前选中 |
 
 常用选项：`--timeout 6000`（测速超时，下载慢时加大）、`--concurrency 16`（并发）、`--group <组名>`（显式指定切换组）、`--json`。
 
+`dl` 专属选项：`-o <文件>`（输出文件名）、`-d <目录>`（保存目录）、`-t <n>`（并发线程数，默认 8）、`--no-proxy`（直连，不选节点）、`--force-node`（强制内置 Node 下载器，不用 aria2c）。
+
 ## 常见场景
 
-- **GitHub Release 下载慢**：`clash-pick pick "https://github.com/<owner>/<repo>/releases/download/..."` → 解析 `bestNode` → curl 下载。
-- **无法直连的域名**：先看 `clash-pick list` 里有没有该域名已建的网址代理组；没有就 `pick`（回退 GLOBAL）并提示用户可在 Verge 里建组。
-- **大文件/多线程下载**：`clash-pick pick` 选好节点后，可用 `curl --proxy http://127.0.0.1:7897` 或任何支持 socks5 的工具（`socks5h://127.0.0.1:7897`）下载。
+- **GitHub Release 下载慢**：`clash-pick dl "https://github.com/<owner>/<repo>/releases/download/..."` 一步选节点 + 多线程下载。
+- **无法直连的域名**：先看 `clash-pick list` 里有没有该域名已建的网址代理组；没有就 `dl`/`pick`（回退 GLOBAL）并提示用户可在 Verge 里建组。
+- **大文件/多线程下载**：`clash-pick dl <url> -t 8` 走代理多线程分片下载（内置 Node 下载器；装了 aria2c 自动用 aria2c 多连接）。中断后重跑同 URL 同目录自动断点续传。
+- **Clash 离线时**：`clash-pick dl <url> --no-proxy` 直连多线程下载，不依赖 Clash。
 
 ## 排障
 
