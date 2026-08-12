@@ -1,4 +1,4 @@
-<#
+﻿<#
   deploy-agents.ps1 — 把 clash-pick 的 Agent Skill 部署到本机各 AI agent 工具
 
   覆盖工具（检测到对应目录就装；统一 SKILL.md 开放标准）：
