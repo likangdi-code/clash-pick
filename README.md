@@ -110,8 +110,10 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude   # cla
 
 | 环境变量 | 说明 |
 |---|---|
-| `CLASH_API` | 覆盖端点，如 `http://127.0.0.1:9097`（默认命名管道） |
-| `CLASH_SECRET` | HTTP 模式下的 secret |
+| `CLASH_API` | 覆盖端点，如 `http://127.0.0.1:9097`（默认命名管道 / Unix socket） |
+| `CLASH_SOCK` | 覆盖 Unix socket 路径（macOS/Linux） |
+| `CLASH_PIPE` | 覆盖 Windows 命名管道路径 |
+| `CLASH_SECRET` | HTTP 模式下的 secret（socket/pipe 传输无需 secret） |
 | `CLASH_MIXED_PORT` | 下载命令提示的代理端口（默认 7897） |
 
 ## 特性

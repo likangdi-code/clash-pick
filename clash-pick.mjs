@@ -37,11 +37,16 @@ import os from 'node:os'
 
 // 跨平台 IPC：Windows 用命名管道，macOS/Linux 用 Clash Verge Rev 的 mihomo Unix socket
 // （路径来自 clash-verge-rev src-tauri/src/utils/dirs.rs: ipc_path()）
+// 环境变量覆盖对齐生态约定：CLASH_PIPE（Windows pipe）、CLASH_SOCK（Unix socket）
 function resolveIpcPath() {
-  if (process.platform === 'win32') return String.raw`\\.\pipe\verge-mihomo`
+  if (process.platform === 'win32') {
+    return process.env.CLASH_PIPE || String.raw`\\.\pipe\verge-mihomo`
+  }
+  if (process.env.CLASH_SOCK) return process.env.CLASH_SOCK
   const candidates = [
     '/tmp/verge/verge-mihomo.sock',
     `${os.homedir()}/.config/verge/verge-mihomo.sock`,
+    `${os.homedir()}/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/verge/verge-mihomo.sock`,
   ]
   for (const p of candidates) if (fs.existsSync(p)) return p
   return candidates[0]
