@@ -1,39 +1,63 @@
 # 🔀 Clash Pick
 
-给 **agent / 脚本** 用的 mihomo 节点选择 CLI。**下载前为任意 URL 自动测出延迟最低的代理节点并切换**，随后走代理下载——复用 Clash Verge Rev「网址代理」建好的组与规则。
+给 **agent / 脚本** 用的 mihomo 节点选择 CLI。**下载前为任意 URL 自动测出延迟最低的节点并切换**，随后走代理下载。可**自动建「网址代理」组**（配合 Clash Verge 网址代理版），也可复用已建好的组。
 
 ## 简介
 
-Clash Pick 是一个 **Node.js 零依赖** 的命令行工具，直接连接 Clash Verge Rev 内置的 mihomo（走命名管道 `\\.\pipe\verge-mihomo`，免配置、无 secret）。它解决一个具体问题：**AI agent 下载文件之前，先针对下载链接选出最快的节点，再开始下载**。
+Clash Pick 是一个 **Node 零 npm 依赖** 的命令行工具，直接连接 [Clash Verge（网址代理版）](https://github.com/likangdi-code/clash-verge-url-proxy) 内置的 mihomo（Windows 命名管道 / macOS·Linux Unix socket，免配置、无 secret）。它解决一个具体问题：**下载文件之前，先针对下载链接选出最快的节点，再开始下载**——尤其适合 AI agent 自动执行。
 
 ```
-下载链接 ──▶ clash-pick pick <url> ──▶ 自动命中网址代理组/回退 GLOBAL
-                                            │ 并发测速（针对该 URL）
-                                            ▼
-                                   切到延迟最低的节点
-                                            │
-                                    curl --proxy http://127.0.0.1:7897 -L -O <url>
+下载链接 ──▶ clash-pick add/pick <url> ──▶ 自动命中网址代理组（无则 add 自动建组）
+                                                │ 并发测速（针对该 URL）
+                                                ▼
+                                        切到延迟最低的节点
+                                                │
+                                  curl --proxy http://127.0.0.1:7897 -L -O <url>
 ```
 
 ## Preview
 
 ```console
-$ clash-pick pick "https://web.telegram.org"
+$ clash-pick add "https://example.com"
 
-目标: web.telegram.org  (https://web.telegram.org)
-切换组: URL-Proxy-duZqQPjG (网址代理组)
-测速节点: 71 个
-延迟最低:
-     281 ms  🇯🇵 日本01 ◀
-     285 ms  🇨🇳 台湾02
-     296 ms  🇨🇭 瑞士
-✓ 已切换 URL-Proxy-duZqQPjG → 🇯🇵 日本01 (281 ms)
-下载: curl --proxy http://127.0.0.1:7897 -L -O 'https://web.telegram.org'
+✓ 已创建网址代理组 URL-Proxy-ptDiIw（example.com）
+组: URL-Proxy-ptDiIw  测速节点: 71 个
+✓ 已切换 URL-Proxy-ptDiIw → 距离下次重置剩余：17 天 (46 ms)
+下载: curl --proxy http://127.0.0.1:7897 -L -O 'https://example.com'
 ```
 
-## 核心功能
+## 与 Clash Verge（网址代理版）联合使用
 
-### 安装工具（只装本体，不装 skill）
+Clash Pick 与 [Clash Verge（网址代理版）](https://github.com/likangdi-code/clash-verge-url-proxy) 是**同一个体系的两面**——共用同一份「网址代理」组与规则：
+
+| | Clash Verge（网址代理版）GUI | Clash Pick CLI |
+|---|---|---|
+| 角色 | 可视化管理「网址代理」 | 自动化测速选节点 |
+| 建组 | 界面手动新建 `URL-Proxy-*` 组 | `add` 全自动建组（走命令桥） |
+| 选节点 | 手动点击 / ⚡ 测速 / AUTO | `pick` 自动切最低延迟 |
+| 适用 | 日常手动使用 | agent / 脚本 / 下载自动化 |
+
+**联合工作流（AI agent 下载场景）**：
+
+```bash
+# 1. agent 拿到下载链接，全自动建组 + 选最优节点（Verge 在跑即可）
+clash-pick add "https://example.com/big-file.zip" --json
+#    → 该域名没建过组时自动建 URL-Proxy-* 组（写增强文件 + reload，命令桥完成）
+
+# 2. 走 mihomo 混入端口下载（命中网址代理规则 → 走刚选中的节点）
+curl --proxy http://127.0.0.1:7897 -L -o big-file.zip "https://example.com/big-file.zip"
+
+# 3. 打开 Clash Verge 的「网址代理」页 → 能看到刚才自动建的组，随时手动调整节点
+```
+
+- **共用同一份组/规则**：GUI 建的组，CLI 能 `pick`；CLI `add` 建的组，GUI 能看到并可手动管理。两者操作同一个 mihomo 内核与增强文件。
+- **互补**：GUI 适合可视化巡检和手动微调，CLI 适合把「下载前选最优节点」自动化（尤其 agent 自主执行）。
+
+> ⚠️ `add` 依赖 Verge 的**命令桥**（`/commands/profile-save`），需要**含命令桥的构建**（本次发布的安装包已含此能力）。旧版 Verge 仍可用 `pick`（对已建组测速切换）。
+
+## 快速开始
+
+### 安装工具
 
 **Windows**（PowerShell 终端一行）：
 
@@ -47,56 +71,50 @@ irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.sh | sh
 ```
 
-安装到 `~/.local/bin` 并加入 PATH。需要 Node.js（≥18）。
-本脚本**只装工具、不装 skill**——skill 由各 agent 工具自行部署（见下）。适合 agent 帮助安装工具时使用。
+安装后新开终端即可用 `clash-pick`。需要 Node.js（≥18）。本脚本**只装工具、不装 skill**。
 
 ### 平台支持
 
 | 平台 | 连接 mihomo | 安装 |
 |---|---|---|
-| Windows | 命名管道 `\\.\pipe\verge-mihomo`（免配置） | `install.ps1`（`irm \| iex`） |
-| macOS | Unix socket `/tmp/verge/verge-mihomo.sock`（免配置） | `install.sh`（`curl \| sh`） |
-| Linux | Unix socket `/tmp/verge/verge-mihomo.sock`（免配置） | `install.sh`（`curl \| sh`） |
+| Windows | 命名管道 `\\.\pipe\verge-mihomo`（免配置） | `install.ps1` |
+| macOS | Unix socket `/tmp/verge/verge-mihomo.sock`（免配置） | `install.sh` |
+| Linux | Unix socket `/tmp/verge/verge-mihomo.sock`（免配置） | `install.sh` |
 
-clash-pick 自动检测平台选择 IPC 方式；也可用 `CLASH_API` 指向任意 mihomo 的 HTTP external-controller。
+clash-pick 自动检测平台选 IPC 方式；也可用 `CLASH_API` 指向任意 mihomo HTTP external-controller。
 
-### 部署 skill 到各 agent（用户一键式，含汇总）
+### 部署 Agent Skill（让 agent 自主调用）
 
-把 clash-pick 的 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `~/.agents/skills`）。结束后会**汇总列出「已安装到哪些」「未检测到哪些」**，方便你确认还有哪些工具可能要单独安装 skill：
+把 clash-pick 的 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `~/.agents/skills`），结束后汇总「已安装到哪些 / 未检测到哪些」：
 
 ```powershell
 # Windows: powershell · macOS/Linux 需 pwsh（brew install powershell）
-powershell -ExecutionPolicy Bypass -File deploy-agents.ps1    # 或 pwsh -File deploy-agents.ps1
-```
-
-只装到**指定**工具（供某个 agent 给自己装 skill）：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude   # claude / gemini / codex / opencode / hermes / openclaw / grok / agents
+powershell -ExecutionPolicy Bypass -File deploy-agents.ps1
+# 只装到指定 agent（如 Claude Code）：
+powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 ```
 
 装好后对应 agent 在「下载 / 选节点 / 走代理」场景下会**自主调用** clash-pick，无需手动敲命令。
 
-### 使用教程（Agent 下载流程）
+## 使用教程（Agent 下载流程）
 
-1. **全自动建组 + 选节点**（`add` 会为没建过网址代理组的域名自动建组，走 Verge 命令桥；Verge 在跑即可）：
+1. **全自动建组 + 选节点**：
    ```bash
-   clash-pick add "https://example.com/big-file.zip"
+   clash-pick add "https://example.com/big-file.zip"   # 没建过组 → 自动建；已建 → 复用
    ```
    或仅对已建组测速切换：`clash-pick pick "https://example.com/big-file.zip"`
-2. 用 mihomo 混入端口下载（命中网址代理规则 → 走刚选中的节点）：
+2. 走 mihomo 混入端口下载：
    ```bash
    curl --proxy http://127.0.0.1:7897 -L -o big-file.zip "https://example.com/big-file.zip"
    ```
 
-### 功能细节
+## 核心功能
 
-- **子命令**：`pick <url>`（测速+自动切换）、`test <url>`（只测速不切）、`list`、`current`
-- **`--json` 输出**：机器可读，供 agent 程序化解析（含 bestNode/bestDelay/group/top）
+- **子命令**：`add <url>`（自动建组 + 测速切换）、`pick <url>`（测速切换已有组）、`test <url>`（只测速）、`list`、`current`
+- **`--json` 输出**：机器可读（bestNode / bestDelay / group / top），供 agent 程序化解析
 - **自动命中网址代理组**：从 mihomo `/rules` 探测 `DOMAIN-SUFFIX` 规则 → `URL-Proxy-*` 组；命中多个取最具体的域名
-- **无命中回退 GLOBAL**：未建网址代理组的域名切 GLOBAL，rule 模式下未匹配规则的下载流量走它
-- **针对 URL 测速**：`GET /proxies/{name}/delay?url=<url>`，测的是目标 URL 的真实连通延迟
-- **纯 REST 读取/切换**：不建组（建组需 Verge 增强文件 + reload，请在 Verge「网址代理」页面操作）
+- **无命中回退 GLOBAL**：未建组的域名切 GLOBAL（rule 模式下未匹配规则的流量走它）
+- **针对 URL 精确测速**：`GET /proxies/{name}/delay?url=<url>`
 
 ### 选项与环境变量
 
@@ -119,24 +137,25 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude   # cla
 
 ## 特性
 
-- **零配置**：走 Clash Verge Rev 命名管道，免开 external controller、免 secret
-- **零依赖**：纯 Node 原生模块，无 `npm install`
+- **零配置**：走 Verge 命名管道 / Unix socket，免开 external controller、免 secret
+- **零 npm 依赖**：纯 Node + vendored js-yaml，无需 `npm install`
 - **针对 URL 精确测速**，而不是用固定测试站
 - **并发测速**（默认 12 路），全节点秒出结果
+- **自动建组**：`add` 全自动写增强文件 + reload（走 Verge 命令桥）
 - **`--json`** 结构化输出，天然适配 agent 工具调用
 - **幂等安装脚本**：重复运行只更新不产生重复 PATH 条目
 
 ## 工作原理
 
 1. 解析 URL → 域名
-2. `GET /proxies` 拿节点与组
-3. `GET /rules` 探测该域名命中的网址代理组
+2. `GET /proxies` 拿节点与组；`GET /rules` 探测命中的网址代理组
+3. `add`：读当前订阅增强文件 → 生成 `URL-Proxy-*` 组 + `DOMAIN-SUFFIX` 规则 → 经 Verge 命令桥写盘 + 校验 + reload
 4. 组内节点**针对该 URL** 并发测速
 5. `PUT /proxies/{group}` 切到延迟最低的节点
 
 ## 开发
 
-零依赖 Node 脚本，无需构建：
+零 npm 依赖的 Node 脚本，无需构建：
 
 ```bash
 git clone https://github.com/likangdi-code/clash-pick
@@ -144,11 +163,11 @@ cd clash-pick
 node clash-pick.mjs list        # 直接运行
 ```
 
-前置：本机运行着 Clash Verge Rev（或任意暴露 external-controller 的 mihomo，用 `CLASH_API` 指定）。
+前置：本机运行着 Clash Verge（网址代理版）（或任意暴露 external-controller 的 mihomo，用 `CLASH_API` 指定）。
 
 ## 致谢
 
-- [clash-verge-url-proxy](https://github.com/likangdi-code/clash-verge-url-proxy) — 「网址代理」功能与组/规则机制
+- [clash-verge-url-proxy](https://github.com/likangdi-code/clash-verge-url-proxy) — 「网址代理」功能、组/规则机制与命令桥
 - [clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev) — Clash Verge Rev 项目
 - [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) — mihomo 内核与 external-controller API
 
