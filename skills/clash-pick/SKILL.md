@@ -110,13 +110,15 @@ curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
 
 **非公开 URL**：下载需要认证的文件时加 `-H` 指定认证头（如 `Authorization: Bearer <token>` / `Cookie`）。一次性签名/受限 URL 多线程分片遇 401/403/429 时自动降级单线程，文件仍完整下载，不会整体失败。
 
+**下载引擎（混合）**：装了 aria2c 自动优先用 aria2c（多连接 + 断点续传，成熟引擎）；没装则用内置 Node 分片下载器兜底（`--force-node` 可强制用内置）。**跨域名重定向会自动剥离敏感头**（如 `api.github.com` 302 → 签名 CDN：Authorization/Cookie 不会误传给 CDN 导致 401），GitHub Actions 私有产物等场景可用 `clash-dl <url> -H "Authorization: Bearer <token>"` 正常下载。
+
 ## 常见场景
 
 - **GitHub Release 下载慢**：`clash-pick dl "https://github.com/<owner>/<repo>/releases/download/..."` 一步选节点 + 多线程下载；或分步：`clash-pick pick <url>` 选节点 → `clash-dl <url>` 独立下载。
 - **无法直连的域名**：先看 `clash-pick list` 里有没有该域名已建的网址代理组；没有就 `dl`/`pick`（回退 GLOBAL）并提示用户可在 Verge 里建组。
-- **大文件/多线程下载**：`clash-dl <url> -t 8` 或 `clash-pick dl <url> -t 8` 走代理多线程分片下载（内置 Node 下载器；装了 aria2c 自动用 aria2c 多连接）。中断后重跑同 URL 同目录自动断点续传。
+- **大文件/多线程下载**：`clash-dl <url> -t 8` 或 `clash-pick dl <url> -t 8` 走代理多线程分片下载（本机已装 aria2c → 自动用 aria2c 多连接；`--force-node` 强制用内置 Node 兜底）。中断后重跑同 URL 同目录自动断点续传。
 - **Clash 离线时**：`clash-dl <url> --no-proxy` 直连多线程下载，不依赖 Clash。
-- **非公开 URL（需认证）**：`clash-dl <url> -H "Authorization: Bearer <token>"` 或 `-H "Cookie: ..."`；一次性签名/受限 URL 分片遇 403 自动降级单线程。
+- **非公开 URL（需认证）**：`clash-dl <url> -H "Authorization: Bearer <token>"` 或 `-H "Cookie: ..."`；一次性签名/受限 URL 分片遇 403 自动降级单线程；GitHub Actions 产物等跨域 302 自动剥离敏感头，可正常下载。
 
 ## 排障
 
