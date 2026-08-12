@@ -94,23 +94,26 @@ curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
 
 | 命令 | 说明 |
 |---|---|
-| `clash-pick dl <url>` | 选节点 + 走代理多线程下载一步完成（推荐） |
+| `clash-pick dl <url>` | 选节点 + 走代理多线程下载一步完成 |
+| `clash-dl <url>` | **独立**多线程下载命令（下载器独立于选节点，可单独用） |
 | `clash-pick add <url>` | 自动建组 + 测速切换最低延迟节点（分步流程第一步） |
 | `clash-pick pick <url>` | 测速 + 自动切换已有组 |
 | `clash-pick test <url>` | 只测速不切换（看节点快慢） |
 | `clash-pick list` | 列真节点、网址代理组、域名→组规则 |
 | `clash-pick current` | 看 GLOBAL 与各网址代理组当前选中 |
 
+下载器与选节点**解耦**：`clash-dl <url>` 是独立下载命令，可单独用（走 7897 代理，命中已选节点）；`clash-pick dl` 是「选节点 + 下载」一步快捷方式。两者共用同一下载引擎。
+
 常用选项：`--timeout 6000`（测速超时，下载慢时加大）、`--concurrency 16`（并发）、`--group <组名>`（显式指定切换组）、`--json`。
 
-`dl` 专属选项：`-o <文件>`（输出文件名）、`-d <目录>`（保存目录）、`-t <n>`（并发线程数，默认 8）、`--no-proxy`（直连，不选节点）、`--force-node`（强制内置 Node 下载器，不用 aria2c）。
+`dl`/`clash-dl` 专属选项：`-o <文件>`（输出文件名）、`-d <目录>`（保存目录）、`-t <n>`（并发线程数，默认 8）、`--no-proxy`（直连，不选节点）、`--force-node`（强制内置 Node 下载器，不用 aria2c）。
 
 ## 常见场景
 
-- **GitHub Release 下载慢**：`clash-pick dl "https://github.com/<owner>/<repo>/releases/download/..."` 一步选节点 + 多线程下载。
+- **GitHub Release 下载慢**：`clash-pick dl "https://github.com/<owner>/<repo>/releases/download/..."` 一步选节点 + 多线程下载；或分步：`clash-pick pick <url>` 选节点 → `clash-dl <url>` 独立下载。
 - **无法直连的域名**：先看 `clash-pick list` 里有没有该域名已建的网址代理组；没有就 `dl`/`pick`（回退 GLOBAL）并提示用户可在 Verge 里建组。
-- **大文件/多线程下载**：`clash-pick dl <url> -t 8` 走代理多线程分片下载（内置 Node 下载器；装了 aria2c 自动用 aria2c 多连接）。中断后重跑同 URL 同目录自动断点续传。
-- **Clash 离线时**：`clash-pick dl <url> --no-proxy` 直连多线程下载，不依赖 Clash。
+- **大文件/多线程下载**：`clash-dl <url> -t 8` 或 `clash-pick dl <url> -t 8` 走代理多线程分片下载（内置 Node 下载器；装了 aria2c 自动用 aria2c 多连接）。中断后重跑同 URL 同目录自动断点续传。
+- **Clash 离线时**：`clash-dl <url> --no-proxy` 直连多线程下载，不依赖 Clash。
 
 ## 排障
 

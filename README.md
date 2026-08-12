@@ -126,6 +126,7 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 - **无命中回退 GLOBAL**：未建组的域名切 GLOBAL（rule 模式下未匹配规则的流量走它）
 - **针对 URL 精确测速**：`GET /proxies/{name}/delay?url=<url>`
 - **`dl` 一体化下载**：选完节点直接用多线程引擎下载（见下「多线程下载引擎」）
+- **`clash-dl` 独立下载命令**：下载器与选节点解耦，可单独使用（见下）
 
 ### 选项与环境变量
 
@@ -156,9 +157,27 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 | `CLASH_SECRET` | HTTP 模式下的 secret（socket/pipe 传输无需 secret） |
 | `CLASH_MIXED_PORT` | 下载命令提示的代理端口（默认 7897） |
 
-## 多线程下载引擎（`dl` 命令）
+## 多线程下载引擎（`dl` 命令 / `clash-dl` 独立命令）
 
-`clash-pick dl <url>` 把「选节点」和「下载」合并成一步：**先自动建组 / 复用组 + 测速切换最低延迟节点，再走代理多线程下载**。
+下载引擎是一个**独立可用的部分**，与选节点解耦：
+
+- **`clash-dl <url>`** — 独立多线程下载命令（与 `clash-pick` 平级入口），选节点与下载分开：先用 `clash-pick pick/add` 选好节点，再随时用 `clash-dl` 下载。
+- **`clash-pick dl <url>`** — 一键快捷方式，把「选节点 + 下载」合并成一步。
+
+两者共用同一个下载引擎，效果相同。`clash-dl` 也支持代理直连（`--no-proxy`）、线程数（`-t`）、输出目录（`-d`）等所有 `dl` 选项。
+
+**独立使用示例（先选节点，后下载）**：
+
+```bash
+# 1. 先选节点（自动建组 + 切最低延迟）
+clash-pick add "https://github.com/owner/repo/releases/download/v1.0/app.zip"
+
+# 2. 随时用独立下载命令下载（自动走 7897 代理，命中刚切的节点）
+clash-dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d ~/Downloads -t 8
+
+# 3. 或一步到位
+clash-pick dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d ~/Downloads -t 8
+```
 
 引擎采用**混合方案**：
 

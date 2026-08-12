@@ -22,18 +22,25 @@ fi
 # 2. 创建目录
 mkdir -p "$INSTALL_DIR"
 
-# 3. 下载主脚本 + vendored js-yaml（add 命令解析/生成 YAML 用）
+# 3. 下载主脚本 + 独立下载引擎 + vendored js-yaml（dl 多线程下载 / add 解析 YAML 用）
 echo "下载 clash-pick.mjs -> $INSTALL_DIR"
 curl -fsSL "$REPO/clash-pick.mjs" -o "$INSTALL_DIR/clash-pick.mjs"
+curl -fsSL "$REPO/downloader.mjs" -o "$INSTALL_DIR/downloader.mjs"
 mkdir -p "$INSTALL_DIR/vendor"
 curl -fsSL "$REPO/vendor/js-yaml.mjs" -o "$INSTALL_DIR/vendor/js-yaml.mjs"
 
-# 4. 生成 clash-pick 命令包装
+# 4. 生成 clash-pick + clash-dl 命令包装
 cat > "$INSTALL_DIR/clash-pick" <<'WRAP'
 #!/usr/bin/env sh
 exec node "$(dirname "$0")/clash-pick.mjs" "$@"
 WRAP
 chmod +x "$INSTALL_DIR/clash-pick"
+
+cat > "$INSTALL_DIR/clash-dl" <<'WRAP'
+#!/usr/bin/env sh
+exec node "$(dirname "$0")/clash-pick.mjs" dl "$@"
+WRAP
+chmod +x "$INSTALL_DIR/clash-dl"
 
 # 5. 加入 PATH（幂等：追加到第一个存在的 rc 文件）
 case ":$PATH:" in
@@ -66,6 +73,7 @@ echo "✓ clash-pick 工具安装完成（未安装 skill）。"
 echo "  新开终端后可直接："
 echo "    clash-pick list"
 echo "    clash-pick pick \"https://example.com/big-file.zip\""
+echo "    clash-dl \"https://example.com/big-file.zip\"   （独立多线程下载）"
 echo ""
 echo "▶ 部署 skill 到本机所有 agent 工具（需 pwsh；macOS: brew install powershell）："
 echo "    pwsh -File \"$INSTALL_DIR/deploy-agents.ps1\""

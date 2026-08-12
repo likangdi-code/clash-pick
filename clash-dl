@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# clash-dl command wrapper — 独立多线程下载（走代理/直连），复用 clash-pick 的 dl 子命令
+exec node "$(dirname "$0")/clash-pick.mjs" dl "$@"

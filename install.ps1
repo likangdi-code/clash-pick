@@ -29,16 +29,19 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 # 2. 创建安装目录
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-# 3. 下载脚本主体 + vendored js-yaml（add 命令解析/生成 YAML 用）
+# 3. 下载脚本主体 + vendored js-yaml + 独立下载引擎（add 解析 YAML / dl 多线程下载用）
 Write-Host "下载 clash-pick.mjs -> $installDir" -ForegroundColor Cyan
 $mjs = Join-Path $installDir 'clash-pick.mjs'
 Invoke-WebRequest -Uri "$repoBase/clash-pick.mjs" -OutFile $mjs -UseBasicParsing
+Invoke-WebRequest -Uri "$repoBase/downloader.mjs" -OutFile (Join-Path $installDir 'downloader.mjs') -UseBasicParsing
 New-Item -ItemType Directory -Force -Path (Join-Path $installDir 'vendor') | Out-Null
 Invoke-WebRequest -Uri "$repoBase/vendor/js-yaml.mjs" -OutFile (Join-Path $installDir 'vendor\js-yaml.mjs') -UseBasicParsing
 
-# 4. 生成命令包装 clash-pick.cmd
+# 4. 生成命令包装 clash-pick.cmd + clash-dl.cmd（均纯 ASCII，避免 cmd 代码页解析乱码）
 $cmdContent = "@echo off`r`nrem clash-pick command wrapper`r`nnode `"%~dp0clash-pick.mjs`" %*`r`n"
 Set-Content -Path (Join-Path $installDir 'clash-pick.cmd') -Value $cmdContent -Encoding ASCII
+$dlCmdContent = "@echo off`r`nrem clash-dl: standalone multi-threaded downloader (proxy/direct), wraps clash-pick dl`r`nnode `"%~dp0clash-pick.mjs`" dl %*`r`n"
+Set-Content -Path (Join-Path $installDir 'clash-dl.cmd') -Value $dlCmdContent -Encoding ASCII
 
 # 5. 把安装目录加入用户 PATH（幂等）
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -67,6 +70,7 @@ Write-Host '✓ clash-pick 工具安装完成（未安装 skill）。' -Foregrou
 Write-Host '  新开终端（或刷新 PATH）后可直接：'
 Write-Host '    clash-pick list'
 Write-Host '    clash-pick pick "https://example.com/big-file.zip"'
+Write-Host '    clash-dl "https://example.com/big-file.zip"   （独立多线程下载）'
 Write-Host ''
 Write-Host '▶ 部署 skill 到本机【所有】agent 工具：' -ForegroundColor Cyan
 Write-Host "    powershell -ExecutionPolicy Bypass -File `"$installDir\deploy-agents.ps1`""
