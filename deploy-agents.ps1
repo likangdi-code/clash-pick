@@ -42,14 +42,14 @@ if ($SourcePath) {
 
 # 2. 各 agent 工具： key -> (检测目录, skills 目录, 显示名)
 $targets = @(
-  @{ key = 'claude';    name = 'Claude Code'; dir = "$env:USERPROFILE\.claude";           skills = "$env:USERPROFILE\.claude\skills" },
-  @{ key = 'gemini';    name = 'Gemini';      dir = "$env:USERPROFILE\.gemini";          skills = "$env:USERPROFILE\.gemini\skills" },
-  @{ key = 'codex';     name = 'Codex';       dir = "$env:USERPROFILE\.codex";           skills = "$env:USERPROFILE\.codex\skills" },
-  @{ key = 'opencode';  name = 'OpenCode';    dir = "$env:USERPROFILE\.config\opencode"; skills = "$env:USERPROFILE\.config\opencode\skills" },
-  @{ key = 'hermes';    name = 'Hermes';      dir = "$env:USERPROFILE\.hermes";          skills = "$env:USERPROFILE\.hermes\skills" },
-  @{ key = 'openclaw';  name = 'OpenClaw';    dir = "$env:USERPROFILE\.openclaw";        skills = "$env:USERPROFILE\.openclaw\skills" },
-  @{ key = 'grok';      name = 'Grok';        dir = "$env:USERPROFILE\.grok";            skills = "$env:USERPROFILE\.grok\skills" },
-  @{ key = 'agents';    name = '共享池 .agents'; dir = "$env:USERPROFILE\.agents";         skills = "$env:USERPROFILE\.agents\skills" }
+  @{ key = 'claude';    name = 'Claude Code'; dir = "$HOME\.claude";           skills = "$HOME\.claude\skills" },
+  @{ key = 'gemini';    name = 'Gemini';      dir = "$HOME\.gemini";          skills = "$HOME\.gemini\skills" },
+  @{ key = 'codex';     name = 'Codex';       dir = "$HOME\.codex";           skills = "$HOME\.codex\skills" },
+  @{ key = 'opencode';  name = 'OpenCode';    dir = "$HOME\.config\opencode"; skills = "$HOME\.config\opencode\skills" },
+  @{ key = 'hermes';    name = 'Hermes';      dir = "$HOME\.hermes";          skills = "$HOME\.hermes\skills" },
+  @{ key = 'openclaw';  name = 'OpenClaw';    dir = "$HOME\.openclaw";        skills = "$HOME\.openclaw\skills" },
+  @{ key = 'grok';      name = 'Grok';        dir = "$HOME\.grok";            skills = "$HOME\.grok\skills" },
+  @{ key = 'agents';    name = '共享池 .agents'; dir = "$HOME\.agents";         skills = "$HOME\.agents\skills" }
 )
 
 # 过滤：-Agent 指定了则只处理该工具

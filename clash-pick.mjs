@@ -32,8 +32,21 @@
  */
 import net from 'node:net'
 import http from 'node:http'
+import fs from 'node:fs'
+import os from 'node:os'
 
-const PIPE = String.raw`\\.\pipe\verge-mihomo`
+// 跨平台 IPC：Windows 用命名管道，macOS/Linux 用 Clash Verge Rev 的 mihomo Unix socket
+// （路径来自 clash-verge-rev src-tauri/src/utils/dirs.rs: ipc_path()）
+function resolveIpcPath() {
+  if (process.platform === 'win32') return String.raw`\\.\pipe\verge-mihomo`
+  const candidates = [
+    '/tmp/verge/verge-mihomo.sock',
+    `${os.homedir()}/.config/verge/verge-mihomo.sock`,
+  ]
+  for (const p of candidates) if (fs.existsSync(p)) return p
+  return candidates[0]
+}
+const IPC_PATH = resolveIpcPath()
 const DEFAULT_MIXED_PORT = 7897
 
 // ─── 传输层：命名管道 / HTTP，统一返回 {status, json, body} ──────────────────
@@ -72,7 +85,7 @@ function httpRequest(base, method, path, body, secret) {
 
 function pipeRequest(method, path, body) {
   return new Promise((resolve, reject) => {
-    const sock = net.createConnection(PIPE)
+    const sock = net.createConnection(IPC_PATH)
     let buf = Buffer.alloc(0)
     let settled = false
     const done = (err, res) => {

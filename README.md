@@ -35,21 +35,38 @@ $ clash-pick pick "https://web.telegram.org"
 
 ### 安装工具（只装本体，不装 skill）
 
-PowerShell 终端粘贴**一行命令**安装 clash-pick 工具（到 `%LOCALAPPDATA%\Programs\clash-pick` 并加入 PATH）：
+**Windows**（PowerShell 终端一行）：
 
 ```powershell
 irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 | iex
 ```
 
-安装后新开终端即可使用 `clash-pick`。需要 Node.js（≥18）。
+**macOS / Linux**（终端一行）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.sh | sh
+```
+
+安装到 `~/.local/bin` 并加入 PATH。需要 Node.js（≥18）。
 本脚本**只装工具、不装 skill**——skill 由各 agent 工具自行部署（见下）。适合 agent 帮助安装工具时使用。
+
+### 平台支持
+
+| 平台 | 连接 mihomo | 安装 |
+|---|---|---|
+| Windows | 命名管道 `\\.\pipe\verge-mihomo`（免配置） | `install.ps1`（`irm \| iex`） |
+| macOS | Unix socket `/tmp/verge/verge-mihomo.sock`（免配置） | `install.sh`（`curl \| sh`） |
+| Linux | Unix socket `/tmp/verge/verge-mihomo.sock`（免配置） | `install.sh`（`curl \| sh`） |
+
+clash-pick 自动检测平台选择 IPC 方式；也可用 `CLASH_API` 指向任意 mihomo 的 HTTP external-controller。
 
 ### 部署 skill 到各 agent（用户一键式，含汇总）
 
 把 clash-pick 的 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `~/.agents/skills`）。结束后会**汇总列出「已安装到哪些」「未检测到哪些」**，方便你确认还有哪些工具可能要单独安装 skill：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File deploy-agents.ps1
+# Windows: powershell · macOS/Linux 需 pwsh（brew install powershell）
+powershell -ExecutionPolicy Bypass -File deploy-agents.ps1    # 或 pwsh -File deploy-agents.ps1
 ```
 
 只装到**指定**工具（供某个 agent 给自己装 skill）：
