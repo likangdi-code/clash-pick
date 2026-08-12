@@ -40,10 +40,13 @@ clash-pick list
 
 ## Agent 下载工作流（标准流程）
 
-下载**任何需要走代理的文件**前，先选节点再下载：
+下载**任何需要走代理的文件**前，先选节点再下载。**优先用 `add`**——该域名没建过网址代理组时自动建组（写增强文件 + reload，走 Verge 命令桥；Verge 在跑即可）：
 
 ```bash
-# 1. 为下载链接选最低延迟节点（自动命中该域名已建的「网址代理」组；无则回退 GLOBAL）
+# 1a. 全自动：为 URL 建网址代理组（已存在则复用）+ 测速切换最低延迟节点
+clash-pick add "<下载URL>" --json
+
+# 1b. 或仅对已建的组测速切换（无需建组）
 clash-pick pick "<下载URL>" --json
 
 # 2. 解析 JSON 拿到 bestNode / group，确认已切换（switched: true）

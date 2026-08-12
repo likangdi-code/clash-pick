@@ -29,10 +29,12 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 # 2. 创建安装目录
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-# 3. 下载脚本主体
+# 3. 下载脚本主体 + vendored js-yaml（add 命令解析/生成 YAML 用）
 Write-Host "下载 clash-pick.mjs -> $installDir" -ForegroundColor Cyan
 $mjs = Join-Path $installDir 'clash-pick.mjs'
 Invoke-WebRequest -Uri "$repoBase/clash-pick.mjs" -OutFile $mjs -UseBasicParsing
+New-Item -ItemType Directory -Force -Path (Join-Path $installDir 'vendor') | Out-Null
+Invoke-WebRequest -Uri "$repoBase/vendor/js-yaml.mjs" -OutFile (Join-Path $installDir 'vendor\js-yaml.mjs') -UseBasicParsing
 
 # 4. 生成命令包装 clash-pick.cmd
 $cmdContent = "@echo off`r`nrem clash-pick command wrapper`r`nnode `"%~dp0clash-pick.mjs`" %*`r`n"

@@ -34,6 +34,9 @@ import net from 'node:net'
 import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
+import { randomBytes } from 'node:crypto'
+import { load as yamlLoad, dump as yamlDump } from './vendor/js-yaml.mjs'
 
 // 跨平台 IPC：Windows 用命名管道，macOS/Linux 用 Clash Verge Rev 的 mihomo Unix socket
 // （路径来自 clash-verge-rev src-tauri/src/utils/dirs.rs: ipc_path()）
@@ -54,6 +57,33 @@ function resolveIpcPath() {
 const IPC_PATH = resolveIpcPath()
 const DEFAULT_MIXED_PORT = 7897
 
+// ─── Verge 命令桥（HTTP 单例服务器）：写增强文件 + 校验 + reload（建网址代理组用）──
+// 端口来自 clash-verge-rev src-tauri/src/constants.rs: SINGLETON_SERVER = dev 11233 / release 33331
+
+function findProfilesPath() {
+  const appdata = process.env.APPDATA
+  const home = os.homedir()
+  const candidates = [
+    appdata && path.join(appdata, 'io.github.clash-verge-rev.clash-verge-rev.dev', 'profiles.yaml'),
+    appdata && path.join(appdata, 'io.github.clash-verge-rev.clash-verge-rev', 'profiles.yaml'),
+    path.join(home, 'Library', 'Application Support', 'io.github.clash-verge-rev.clash-verge-rev', 'profiles.yaml'),
+    path.join(home, '.config', 'io.github.clash-verge-rev.clash-verge-rev', 'profiles.yaml'),
+  ].filter(Boolean)
+  return candidates.find((p) => fs.existsSync(p)) || candidates[0]
+}
+
+function getSingletonPort() {
+  const p = findProfilesPath()
+  return p && p.includes('.dev') ? 11233 : 33331
+}
+
+/** 调用 Verge 命令桥（HTTP 单例服务器）；可选 token 用环境变量 CLASH_VERGE_API_TOKEN */
+async function bridgeRequest(method, apiPath, body) {
+  const base = `http://127.0.0.1:${getSingletonPort()}`
+  const token = process.env.CLASH_VERGE_API_TOKEN
+  return httpRequest(base, method, apiPath, body, null, token ? { 'X-API-Token': token } : null)
+}
+
 // ─── 传输层：命名管道 / HTTP，统一返回 {status, json, body} ──────────────────
 
 async function request(method, path, body) {
@@ -65,7 +95,7 @@ async function request(method, path, body) {
   return pipeRequest(method, path, body)
 }
 
-function httpRequest(base, method, path, body, secret) {
+function httpRequest(base, method, path, body, secret, extraHeaders) {
   const u = new URL(path, base)
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -83,6 +113,7 @@ function httpRequest(base, method, path, body, secret) {
     )
     req.on('error', reject)
     if (secret) req.setHeader('Authorization', `Bearer ${secret}`)
+    if (extraHeaders) for (const [k, v] of Object.entries(extraHeaders)) req.setHeader(k, v)
     if (body) req.setHeader('Content-Type', 'application/json')
     req.end(body ?? undefined)
   })
@@ -246,9 +277,9 @@ async function main() {
   // 区分「隐式 pick」（clash-pick <url>）与「显式 pick」（clash-pick pick <url>）
   const rawCmd = positional[0] ?? ''
   let cmd, argUrl
-  if (['pick', 'test', 'list', 'current'].includes(rawCmd)) {
+  if (['pick', 'test', 'add', 'list', 'current'].includes(rawCmd)) {
     cmd = rawCmd
-    argUrl = cmd === 'test' ? positional[1] : cmd === 'pick' ? positional[1] : null
+    argUrl = ['test', 'pick', 'add'].includes(cmd) ? positional[1] : null
   } else {
     cmd = 'pick' // 第一个位置参数就是 URL
     argUrl = rawCmd
@@ -256,9 +287,14 @@ async function main() {
 
   if (cmd === 'list') return cmdList()
   if (cmd === 'current') return cmdCurrent()
+  if (cmd === 'add' && argUrl) return cmdAdd(argUrl, opts)
   if ((cmd === 'pick' || cmd === 'test') && argUrl) return cmdPick(argUrl, opts, cmd === 'test')
   if (cmd === 'pick' || cmd === 'test') {
     console.error(`用法: node clash-pick.mjs ${cmd} <url> [--group 组名] [--timeout ms] [--json]`)
+    process.exit(2)
+  }
+  if (cmd === 'add') {
+    console.error('用法: node clash-pick.mjs add <url> [--timeout ms] [--json]')
     process.exit(2)
   }
   console.error(`未知命令: ${cmd}`)
@@ -297,35 +333,13 @@ async function cmdCurrent() {
   }
 }
 
-async function cmdPick(url, opts, testOnly) {
-  const { host, url: normalizedUrl } = parseHost(url)
+/** 对指定组测速 + 切换最低延迟节点（pick / add 共用） */
+async function testAndSwitch(group, host, normalizedUrl, opts, testOnly) {
   const proxies = (await request('GET', '/proxies')).json?.proxies ?? {}
-
-  // 1. 探测命中的网址代理组
-  let group = opts.group
-  if (!group) {
-    try {
-      const rules = (await request('GET', '/rules')).json?.rules ?? []
-      group = detectUrlProxyGroup(rules, host)
-    } catch { /* 忽略，回退 GLOBAL */ }
-  }
-  if (!group) group = 'GLOBAL'
-
   const candidates = groupCandidates(proxies, group)
-  if (candidates.length === 0) {
-    const msg = `组 ${group} 无可测节点（${host}）`
-    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg, host }))
-    else console.error(msg)
-    process.exit(1)
-  }
-
-  // 2. 并发测速（针对下载 URL）
   const results = await speedTest(candidates, normalizedUrl, opts.timeout, opts.concurrency)
   const sorted = results.filter((r) => r.delay != null).sort((a, b) => a.delay - b.delay)
   const best = pickBest(results)
-  const display = opts.top ? sorted.slice(0, opts.top) : sorted
-
-  // 3. 切换最低延迟节点
   let switched = false
   let switchStatus = null
   if (!testOnly && !opts.noSwitch && best) {
@@ -335,7 +349,87 @@ async function cmdPick(url, opts, testOnly) {
       switched = r.status >= 200 && r.status < 300
     } catch (e) { switchStatus = e.message }
   }
+  return { candidates, sorted, best, switched, switchStatus }
+}
 
+/** 为域名创建网址代理组：写 Groups/Rules 增强文件 + 校验 + reload（走 Verge 命令桥） */
+async function createUrlProxyGroup(host) {
+  const proxies = (await request('GET', '/proxies')).json?.proxies ?? {}
+  const nodeNames = Object.keys(proxies).filter(
+    (n) => !RESERVED.has(n) && !isUrlProxyName(n) && !STRATEGY_TYPES.has(proxies[n]?.type),
+  )
+  if (nodeNames.length === 0) { console.error('[add] 无可用节点'); return null }
+  const id = randomBytes(4).toString('base64url')
+  const groupName = `URL-Proxy-${id}`
+  const profilesPath = findProfilesPath()
+  if (!profilesPath || !fs.existsSync(profilesPath)) { console.error('[add] 未找到 profiles.yaml'); return null }
+  const profiles = yamlLoad(fs.readFileSync(profilesPath, 'utf8'))
+  const currentItem = (profiles?.items ?? []).find((it) => it?.uid === profiles?.current)
+  const groupsUid = currentItem?.option?.groups
+  const rulesUid = currentItem?.option?.rules
+  if (!groupsUid || !rulesUid) { console.error('[add] 当前订阅未启用「代理组/规则」增强'); return null }
+  const profilesDir = path.join(path.dirname(profilesPath), 'profiles')
+  const groupFile = (profiles?.items ?? []).find((it) => it?.uid === groupsUid)?.file
+  const rulesFile = (profiles?.items ?? []).find((it) => it?.uid === rulesUid)?.file
+  if (!groupFile || !rulesFile) { console.error('[add] 增强文件缺失'); return null }
+  const groupsDoc = yamlLoad(fs.readFileSync(path.join(profilesDir, groupFile), 'utf8')) ?? {}
+  const rulesDoc = yamlLoad(fs.readFileSync(path.join(profilesDir, rulesFile), 'utf8')) ?? {}
+  groupsDoc.append = [...(groupsDoc.append ?? []), { name: groupName, type: 'select', proxies: ['DIRECT', 'REJECT', ...nodeNames] }]
+  rulesDoc.append = [...(rulesDoc.append ?? []), `DOMAIN-SUFFIX,${host},${groupName}`]
+  // 命令桥保存：先组后规则（先写组→新组无规则引用校验通过；再写规则→引用已存在的组）
+  let r = await bridgeRequest('POST', `/commands/profile-save?index=${encodeURIComponent(groupsUid)}`, yamlDump(groupsDoc, { forceQuotes: true }))
+  if (r.status !== 200) { console.error('[add] 写 groups 增强失败:', r.status, r.body.slice(0, 300)); return null }
+  r = await bridgeRequest('POST', `/commands/profile-save?index=${encodeURIComponent(rulesUid)}`, yamlDump(rulesDoc, { forceQuotes: true }))
+  if (r.status !== 200) { console.error('[add] 写 rules 增强失败:', r.status, r.body.slice(0, 300)); return null }
+  return groupName
+}
+
+/** add：为 URL 自动建网址代理组（已存在则复用）+ 测速切换最低延迟节点 */
+async function cmdAdd(url, opts) {
+  const { host, url: normalizedUrl } = parseHost(url)
+  let group = opts.group
+  if (!group) {
+    try {
+      const rules = (await request('GET', '/rules')).json?.rules ?? []
+      group = detectUrlProxyGroup(rules, host)
+    } catch { /* 忽略 */ }
+  }
+  if (!group) {
+    group = await createUrlProxyGroup(host)
+    if (!group) { console.error('✗ 建组失败（检查 Verge 命令桥 / 当前订阅增强配置）'); process.exit(1) }
+    console.log(`✓ 已创建网址代理组 ${group}（${host}）`)
+  } else {
+    console.log(`✓ 复用已有网址代理组 ${group}`)
+  }
+  const { candidates, sorted, best, switched } = await testAndSwitch(group, host, normalizedUrl, opts, false)
+  if (opts.json) {
+    console.log(JSON.stringify({ ok: true, host, url: normalizedUrl, group, isUrlProxy: isUrlProxyName(group), bestNode: best?.name ?? null, bestDelay: best?.delay ?? null, switched, candidatesTested: candidates.length, top: sorted.slice(0, opts.top || 5).map((r) => ({ name: r.name, delay: r.delay })) }))
+    return
+  }
+  console.log(`组: ${group}  测速节点: ${candidates.length} 个`)
+  if (best) console.log(`✓ 已切换 ${group} → ${best.name} (${best.delay} ms)`)
+  else console.log('⚠ 无可用节点（全部超时/失败）')
+  console.log(`下载: curl --proxy http://127.0.0.1:${process.env.CLASH_MIXED_PORT ?? DEFAULT_MIXED_PORT} -L -O '${url}'`)
+}
+
+async function cmdPick(url, opts, testOnly) {
+  const { host, url: normalizedUrl } = parseHost(url)
+  let group = opts.group
+  if (!group) {
+    try {
+      const rules = (await request('GET', '/rules')).json?.rules ?? []
+      group = detectUrlProxyGroup(rules, host)
+    } catch { /* 忽略，回退 GLOBAL */ }
+  }
+  if (!group) group = 'GLOBAL'
+  const { candidates, sorted, best, switched, switchStatus } = await testAndSwitch(group, host, normalizedUrl, opts, testOnly)
+  if (candidates.length === 0) {
+    const msg = `组 ${group} 无可测节点（${host}）`
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg, host }))
+    else console.error(msg)
+    process.exit(1)
+  }
+  const display = opts.top ? sorted.slice(0, opts.top) : sorted
   const result = {
     ok: true,
     host,
@@ -348,12 +442,10 @@ async function cmdPick(url, opts, testOnly) {
     candidatesTested: candidates.length,
     testUrl: normalizedUrl,
   }
-
   if (opts.json) {
     console.log(JSON.stringify({ ...result, top: display.map((r) => ({ name: r.name, delay: r.delay })) }))
     return
   }
-
   console.log(`目标: ${host}  (${normalizedUrl})`)
   console.log(`切换组: ${group}${isUrlProxyName(group) ? ' (网址代理组)' : ' (GLOBAL 兜底)'}`)
   console.log(`测速节点: ${candidates.length} 个`)
@@ -371,7 +463,7 @@ async function cmdPick(url, opts, testOnly) {
   else if (testOnly) console.log('(仅测速，未切换)')
   if (!isUrlProxyName(group)) {
     console.log('ℹ  该域名无网址代理组，已回退 GLOBAL。rule 模式下只有未匹配规则的流量走它；')
-    console.log('   如需精准路由，请先在 Verge「网址代理」添加该域名。')
+    console.log('   如需精准路由，请先用 `clash-pick add <url>` 自动建组。')
   }
   console.log(`下载: curl --proxy http://127.0.0.1:${process.env.CLASH_MIXED_PORT ?? DEFAULT_MIXED_PORT} -L -O '${url}'`)
 }

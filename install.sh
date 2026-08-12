@@ -22,9 +22,11 @@ fi
 # 2. 创建目录
 mkdir -p "$INSTALL_DIR"
 
-# 3. 下载主脚本
+# 3. 下载主脚本 + vendored js-yaml（add 命令解析/生成 YAML 用）
 echo "下载 clash-pick.mjs -> $INSTALL_DIR"
 curl -fsSL "$REPO/clash-pick.mjs" -o "$INSTALL_DIR/clash-pick.mjs"
+mkdir -p "$INSTALL_DIR/vendor"
+curl -fsSL "$REPO/vendor/js-yaml.mjs" -o "$INSTALL_DIR/vendor/js-yaml.mjs"
 
 # 4. 生成 clash-pick 命令包装
 cat > "$INSTALL_DIR/clash-pick" <<'WRAP'

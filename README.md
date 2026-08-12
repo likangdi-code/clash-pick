@@ -79,10 +79,11 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude   # cla
 
 ### 使用教程（Agent 下载流程）
 
-1. 为下载链接选最低延迟节点：
+1. **全自动建组 + 选节点**（`add` 会为没建过网址代理组的域名自动建组，走 Verge 命令桥；Verge 在跑即可）：
    ```bash
-   clash-pick pick "https://example.com/big-file.zip"
+   clash-pick add "https://example.com/big-file.zip"
    ```
+   或仅对已建组测速切换：`clash-pick pick "https://example.com/big-file.zip"`
 2. 用 mihomo 混入端口下载（命中网址代理规则 → 走刚选中的节点）：
    ```bash
    curl --proxy http://127.0.0.1:7897 -L -o big-file.zip "https://example.com/big-file.zip"
