@@ -43,6 +43,8 @@ irm https://raw.githubusercontent.com/likangdi-code/clash-pick/main/install.ps1 
 
 安装后新开终端即可使用 `clash-pick`。需要 Node.js（≥18）。
 
+> ✨ 安装脚本还会把 **Agent Skill** 装到 `~/.claude/skills/clash-pick`——Claude Code 等 agent 会在「下载 / 选节点 / 走代理」场景下**自主调用** clash-pick，无需手动敲命令。
+
 ### 使用教程（Agent 下载流程）
 
 1. 为下载链接选最低延迟节点：

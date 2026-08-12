@@ -43,7 +43,13 @@ if (($userPath -split ';') -notcontains $installDir) {
     Write-Host "PATH 已包含安装目录，跳过" -ForegroundColor DarkGray
 }
 
-# 6. 立即在当前进程生效并自检
+# 6. 安装 Agent Skill（让 agent 在下载/选节点场景自主调用 clash-pick）
+$skillDir = Join-Path $env:USERPROFILE '.claude\skills\clash-pick'
+New-Item -ItemType Directory -Force -Path $skillDir | Out-Null
+Invoke-WebRequest -Uri "$repoBase/skills/clash-pick/SKILL.md" -OutFile (Join-Path $skillDir 'SKILL.md') -UseBasicParsing
+Write-Host "已安装 Agent Skill -> $skillDir" -ForegroundColor Green
+
+# 7. 立即在当前进程生效并自检
 $env:Path = $userPath + ';' + $installDir + ';' + $env:Path
 Write-Host ''
 Write-Host '✓ clash-pick 安装完成。' -ForegroundColor Green
@@ -51,3 +57,4 @@ Write-Host '  新开一个终端（或执行 $env:Path = [Environment]::GetEnvir
 Write-Host '    clash-pick list'
 Write-Host '    clash-pick pick "https://example.com/big-file.zip"'
 Write-Host '    clash-pick --help'
+Write-Host '  Agent Skill 已装到 ~/.claude/skills/clash-pick，Claude Code 等 agent 重启会话后即可自主调用。'
