@@ -43,11 +43,11 @@ if (($userPath -split ';') -notcontains $installDir) {
     Write-Host "PATH 已包含安装目录，跳过" -ForegroundColor DarkGray
 }
 
-# 6. 安装 Agent Skill（让 agent 在下载/选节点场景自主调用 clash-pick）
-$skillDir = Join-Path $env:USERPROFILE '.claude\skills\clash-pick'
-New-Item -ItemType Directory -Force -Path $skillDir | Out-Null
-Invoke-WebRequest -Uri "$repoBase/skills/clash-pick/SKILL.md" -OutFile (Join-Path $skillDir 'SKILL.md') -UseBasicParsing
-Write-Host "已安装 Agent Skill -> $skillDir" -ForegroundColor Green
+# 6. 部署 Agent Skill 到本机所有 AI agent 工具（Claude/Gemini/Codex/OpenCode/Hermes/OpenClaw/Grok/.agents）
+$depScript = Join-Path $installDir 'deploy-agents.ps1'
+Invoke-WebRequest -Uri "$repoBase/deploy-agents.ps1" -OutFile $depScript -UseBasicParsing
+Write-Host "调用 deploy-agents.ps1 部署 clash-pick Skill 到本机所有 agent 工具..." -ForegroundColor Cyan
+& $depScript
 
 # 7. 立即在当前进程生效并自检
 $env:Path = $userPath + ';' + $installDir + ';' + $env:Path
