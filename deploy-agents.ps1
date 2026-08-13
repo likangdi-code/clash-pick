@@ -1,5 +1,5 @@
 ﻿<#
-  deploy-agents.ps1 — 把 clash-pick 的 Agent Skill 部署到本机各 AI agent 工具
+  deploy-agents.ps1 — 把 clash-proxy 的 Agent Skill 部署到本机各 AI agent 工具
 
   覆盖工具（检测到对应目录就装；统一 SKILL.md 开放标准）：
     claude / gemini / codex / opencode / hermes / openclaw / grok / agents(共享池 .agents)
@@ -9,18 +9,18 @@
         # 部署到本机【所有】已检测到的 agent 工具（默认从 GitHub raw 拉 SKILL.md）
     powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
         # 只装到【指定】工具（供某个 agent 自己给自己装 skill）
-    powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -SourcePath .\skills\clash-pick\SKILL.md
+    powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -SourcePath .\skills\clash-proxy\SKILL.md
         # 用本地 SKILL.md（离线 / 开发时）
 
   结束后会汇总「已安装到哪些」「未检测到哪些」，方便你确认还有哪些工具需要单独处理。
 #>
 param(
-  [string]$SkillUrl = 'https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main/skills/clash-pick/SKILL.md',
+  [string]$SkillUrl = 'https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main/skills/clash-proxy/SKILL.md',
   [string]$SourcePath = '',
   [string]$Agent = ''   # 只部署指定工具：claude/gemini/codex/opencode/hermes/openclaw/grok/agents
 )
 $ErrorActionPreference = 'Continue'
-$skillName = 'clash-pick'
+$skillName = 'clash-proxy'
 
 # 1. 准备 SKILL.md（本地文件或网络下载）
 $tmp = Join-Path $env:TEMP "deploy-agents-$skillName"
@@ -63,7 +63,7 @@ if ($Agent) {
 
 Write-Host ''
 $scope = if ($Agent) { "指定工具 [$Agent]" } else { '本机所有 agent 工具' }
-Write-Host "部署 clash-pick Skill 到 $scope：" -ForegroundColor Cyan
+Write-Host "部署 clash-proxy Skill 到 $scope：" -ForegroundColor Cyan
 
 $installed = @()   # { name, dest }
 $missing = @()     # { name, key, skillsDir } 工具未检测到
@@ -101,6 +101,6 @@ Write-Host ''
 if ($Agent) {
   Write-Host "已完成 [$Agent] 的 skill 部署。" -ForegroundColor DarkGray
 } else {
-  Write-Host '提示：已装工具重启会话（或 /skills reload）后即可自主调用 clash-pick。' -ForegroundColor DarkGray
+  Write-Host '提示：已装工具重启会话（或 /skills reload）后即可自主调用 clash-proxy。' -ForegroundColor DarkGray
   Write-Host '单个工具单独补装：powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent <claude|gemini|codex|opencode|hermes|openclaw|grok|agents>' -ForegroundColor DarkGray
 }

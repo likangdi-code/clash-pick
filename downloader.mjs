@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * downloader.mjs — 走代理的多线程下载引擎（clash-pick dl 用）
+ * downloader.mjs — 走代理的多线程下载引擎（clash-proxy dl 用）
  *
  * 混合引擎：
  *   1. 探测 aria2c（业界最强开源多线程下载器）：装了 → spawn aria2c 满速下载
@@ -17,7 +17,7 @@
  *   - fetch 预解析自动处理「认证 URL 跨域 302 → 签名 CDN」的敏感头剥离
  *   - probe 遇 401/403 时给出「用 --header 指定认证头」的清晰提示
  *
- * 用法（一般由 clash-pick.mjs dl 调用，也可独立使用）：
+ * 用法（一般由 clash-proxy.mjs dl 调用，也可独立使用）：
  *   node downloader.mjs <url> [--proxy-port 7897] [--threads 8] [-o 文件名] [-d 目录]
  *   node downloader.mjs <url> --header "Authorization: Bearer <token>" --header "Cookie: a=b"
  *
@@ -137,7 +137,7 @@ function guessFilename(urlStr, disposition) {
   return path.basename(name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_'))
 }
 
-// ─── 连接类错误码（供 clash-pick.mjs 导入判断降级）──────────────────────────
+// ─── 连接类错误码（供 clash-proxy.mjs 导入判断降级）──────────────────────────
 
 export const RETRYABLE_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ENETUNREACH', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'])
 
@@ -174,7 +174,7 @@ async function probe(urlStr, proxyPort, headers) {
   const MAX_REDIRECT = 8
   let cur = urlStr
   const h = { ...(headers ?? {}) }
-  if (!h['User-Agent']) h['User-Agent'] = 'clash-pick'
+  if (!h['User-Agent']) h['User-Agent'] = 'clash-proxy'
   for (let i = 0; i < MAX_REDIRECT; i++) {
     const res = await fetch(cur, {
       headers: { ...h, Range: 'bytes=0-0' },
@@ -256,7 +256,7 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
   // 单线程流式下载（fetch 流写入文件）
   const downloadSingle = async () => {
     const res = await fetch(info.url, {
-      headers: { ...(effHeaders ?? {}), 'User-Agent': 'clash-pick' },
+      headers: { ...(effHeaders ?? {}), 'User-Agent': 'clash-proxy' },
       redirect: 'follow',
       signal: AbortSignal.timeout(120000),
     })
@@ -320,7 +320,7 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
 
   const fetchPart = async (start, end) => {
     const res = await fetch(info.url, {
-      headers: { ...(effHeaders ?? {}), 'User-Agent': 'clash-pick', Range: `bytes=${start}-${end}` },
+      headers: { ...(effHeaders ?? {}), 'User-Agent': 'clash-proxy', Range: `bytes=${start}-${end}` },
       redirect: 'follow',
       signal: AbortSignal.timeout(60000),
     })

@@ -1,25 +1,25 @@
-# 🔀 Clash Pick
+# 🔀 Clash Proxy
 
 给 **agent / 脚本** 用的 mihomo 节点选择 CLI。**下载前为任意 URL 自动测出延迟最低的节点并切换**，随后走代理下载。可**自动建「网址代理」组**（配合 Clash Verge 网址代理版），也可复用已建好的组。**`dl` 命令把「选节点」和「多线程下载」合成一步**，下载前自动切最优节点、再用多线程引擎下载（自带零依赖 Node 分片下载器，装了 aria2c 则自动升级为 aria2c 满速下载）。
 
 ## 简介
 
-Clash Pick 是一个 **Node 零 npm 依赖** 的命令行工具，直接连接 [Clash Verge（网址代理版）](https://github.com/likangdi-code/clash-verge-url-proxy) 内置的 mihomo（Windows 命名管道 / macOS·Linux Unix socket，免配置、无 secret）。它解决一个具体问题：**下载文件之前，先针对下载链接选出最快的节点，再开始下载**——尤其适合 AI agent 自动执行。
+Clash Proxy 是一个 **Node 零 npm 依赖** 的命令行工具，直接连接 [Clash Verge（网址代理版）](https://github.com/likangdi-code/clash-verge-url-proxy) 内置的 mihomo（Windows 命名管道 / macOS·Linux Unix socket，免配置、无 secret）。它解决一个具体问题：**下载文件之前，先针对下载链接选出最快的节点，再开始下载**——尤其适合 AI agent 自动执行。
 
 ```
-下载链接 ──▶ clash-pick add/pick <url> ──▶ 自动命中网址代理组（无则 add 自动建组）
+下载链接 ──▶ clash-proxy add/pick <url> ──▶ 自动命中网址代理组（无则 add 自动建组）
                                                 │ 并发测速（针对该 URL）
                                                 ▼
                                         切到延迟最低的节点
                                                 │
                                   curl --proxy http://127.0.0.1:7897 -L -O <url>
-                                  clash-pick dl <url>（选节点 + 多线程下载一步完成）
+                                  clash-proxy dl <url>（选节点 + 多线程下载一步完成）
 ```
 
 ## Preview
 
 ```console
-$ clash-pick add "https://example.com"
+$ clash-proxy add "https://example.com"
 
 ✓ 已创建网址代理组 URL-Proxy-ptDiIw（example.com）
 组: URL-Proxy-ptDiIw  测速节点: 71 个
@@ -29,9 +29,9 @@ $ clash-pick add "https://example.com"
 
 ## 与 Clash Verge（网址代理版）联合使用
 
-Clash Pick 与 [Clash Verge（网址代理版）](https://github.com/likangdi-code/clash-verge-url-proxy) 是**同一个体系的两面**——共用同一份「网址代理」组与规则：
+Clash Proxy 与 [Clash Verge（网址代理版）](https://github.com/likangdi-code/clash-verge-url-proxy) 是**同一个体系的两面**——共用同一份「网址代理」组与规则：
 
-| | Clash Verge（网址代理版）GUI | Clash Pick CLI |
+| | Clash Verge（网址代理版）GUI | Clash Proxy CLI |
 |---|---|---|
 | 角色 | 可视化管理「网址代理」 | 自动化测速选节点 |
 | 建组 | 界面手动新建 `URL-Proxy-*` 组 | `add` 全自动建组（走命令桥） |
@@ -42,16 +42,16 @@ Clash Pick 与 [Clash Verge（网址代理版）](https://github.com/likangdi-co
 
 ```bash
 # 0. 最快方式：选节点 + 多线程下载一步完成（推荐）
-clash-pick dl "https://example.com/big-file.zip" --json
+clash-proxy dl "https://example.com/big-file.zip" --json
 #    → 自动建 URL-Proxy-* 组 + 测速切最优节点 + 走代理多线程下载，一次搞定
 
 # 1. 或分步：agent 拿到下载链接，全自动建组 + 选最优节点（Verge 在跑即可）
-clash-pick add "https://example.com/big-file.zip" --json
+clash-proxy add "https://example.com/big-file.zip" --json
 #    → 该域名没建过组时自动建 URL-Proxy-* 组（写增强文件 + reload，命令桥完成）
 
 # 2. 走 mihomo 混入端口下载（命中网址代理规则 → 走刚选中的节点）
 curl --proxy http://127.0.0.1:7897 -L -o big-file.zip "https://example.com/big-file.zip"
-#    或：clash-pick dl "https://example.com/big-file.zip"（内置多线程下载器）
+#    或：clash-proxy dl "https://example.com/big-file.zip"（内置多线程下载器）
 
 # 3. 打开 Clash Verge 的「网址代理」页 → 能看到刚才自动建的组，随时手动调整节点
 ```
@@ -77,7 +77,7 @@ irm https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/ma
 curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main/install.sh | sh
 ```
 
-安装后新开终端即可用 `clash-pick`。需要 Node.js（≥18）。本脚本**只装工具、不装 skill**。
+安装后新开终端即可用 `clash-proxy`。需要 Node.js（≥18）。本脚本**只装工具、不装 skill**。
 
 ### 平台支持
 
@@ -87,11 +87,11 @@ curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy
 | macOS | Unix socket `/tmp/verge/verge-mihomo.sock`（免配置） | `install.sh` |
 | Linux | Unix socket `/tmp/verge/verge-mihomo.sock`（免配置） | `install.sh` |
 
-clash-pick 自动检测平台选 IPC 方式；也可用 `CLASH_API` 指向任意 mihomo HTTP external-controller。
+clash-proxy 自动检测平台选 IPC 方式；也可用 `CLASH_API` 指向任意 mihomo HTTP external-controller。
 
 ### 部署 Agent Skill（让 agent 自主调用）
 
-把 clash-pick 的 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `~/.agents/skills`），结束后汇总「已安装到哪些 / 未检测到哪些」：
+把 clash-proxy 的 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `~/.agents/skills`），结束后汇总「已安装到哪些 / 未检测到哪些」：
 
 ```powershell
 # Windows: powershell · macOS/Linux 需 pwsh（brew install powershell）
@@ -100,19 +100,19 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1
 powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 ```
 
-装好后对应 agent 在「下载 / 选节点 / 走代理」场景下会**自主调用** clash-pick，无需手动敲命令。
+装好后对应 agent 在「下载 / 选节点 / 走代理」场景下会**自主调用** clash-proxy，无需手动敲命令。
 
 ## 使用教程（Agent 下载流程）
 
 1. **一键选节点 + 多线程下载**（推荐）：
    ```bash
-   clash-pick dl "https://example.com/big-file.zip"   # 建组(无则) + 切最优节点 + 走代理多线程下载
+   clash-proxy dl "https://example.com/big-file.zip"   # 建组(无则) + 切最优节点 + 走代理多线程下载
    ```
 2. **分步**：先建组选节点，再下载：
    ```bash
-   clash-pick add "https://example.com/big-file.zip"   # 没建过组 → 自动建；已建 → 复用
+   clash-proxy add "https://example.com/big-file.zip"   # 没建过组 → 自动建；已建 → 复用
    ```
-   或仅对已建组测速切换：`clash-pick pick "https://example.com/big-file.zip"`
+   或仅对已建组测速切换：`clash-proxy pick "https://example.com/big-file.zip"`
 3. 走 mihomo 混入端口下载：
    ```bash
    curl --proxy http://127.0.0.1:7897 -L -o big-file.zip "https://example.com/big-file.zip"
@@ -162,8 +162,8 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 
 下载引擎是一个**独立可用的部分**，与选节点解耦：
 
-- **`clash-dl <url>`** — 独立多线程下载命令（与 `clash-pick` 平级入口），选节点与下载分开：先用 `clash-pick pick/add` 选好节点，再随时用 `clash-dl` 下载。
-- **`clash-pick dl <url>`** — 一键快捷方式，把「选节点 + 下载」合并成一步。
+- **`clash-dl <url>`** — 独立多线程下载命令（与 `clash-proxy` 平级入口），选节点与下载分开：先用 `clash-proxy pick/add` 选好节点，再随时用 `clash-dl` 下载。
+- **`clash-proxy dl <url>`** — 一键快捷方式，把「选节点 + 下载」合并成一步。
 
 两者共用同一个下载引擎，效果相同。`clash-dl` 也支持代理直连（`--no-proxy`）、线程数（`-t`）、输出目录（`-d`）等所有 `dl` 选项。
 
@@ -171,13 +171,13 @@ powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
 
 ```bash
 # 1. 先选节点（自动建组 + 切最低延迟）
-clash-pick add "https://github.com/owner/repo/releases/download/v1.0/app.zip"
+clash-proxy add "https://github.com/owner/repo/releases/download/v1.0/app.zip"
 
 # 2. 随时用独立下载命令下载（自动走 7897 代理，命中刚切的节点）
 clash-dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d ~/Downloads -t 8
 
 # 3. 或一步到位
-clash-pick dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d ~/Downloads -t 8
+clash-proxy dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d ~/Downloads -t 8
 ```
 
 引擎采用**混合方案**：
@@ -200,8 +200,8 @@ clash-dl "https://example.com/private/file.zip" \
   -H "Authorization: Bearer <token>" \
   -H "Cookie: session=abc123"
 
-# 或走 clash-pick dl（选节点 + 下载一步）
-clash-pick dl "https://example.com/private/file.zip" -H "Authorization: Bearer <token>"
+# 或走 clash-proxy dl（选节点 + 下载一步）
+clash-proxy dl "https://example.com/private/file.zip" -H "Authorization: Bearer <token>"
 
 # 一次性签名 / 受限 URL：多线程分片遇 403 时自动降级单线程，文件仍完整下载
 clash-dl "https://cdn.example.com/signed-url?sig=xxx"
@@ -211,17 +211,17 @@ clash-dl "https://cdn.example.com/signed-url?sig=xxx"
 
 ```bash
 # 建组 + 选最优节点 + 走代理多线程下载（一步完成）
-clash-pick dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d ~/Downloads -t 8
+clash-proxy dl "https://github.com/owner/repo/releases/download/v1.0/app.zip" -d ~/Downloads -t 8
 
 # 已装 aria2c 时同上，自动用 aria2c 多连接满速下载
 # 强制用内置 Node 下载器：
-clash-pick dl "https://example.com/file.bin" --force-node
+clash-proxy dl "https://example.com/file.bin" --force-node
 
 # 不需要代理，直连多线程下载：
-clash-pick dl "https://example.com/file.bin" --no-proxy
+clash-proxy dl "https://example.com/file.bin" --no-proxy
 
 # 机器可读输出（供 agent 解析）：
-clash-pick dl "https://example.com/file.bin" --json
+clash-proxy dl "https://example.com/file.bin" --json
 ```
 
 > **可选安装 aria2c**（获得更快的多连接下载）：
@@ -254,8 +254,8 @@ clash-pick dl "https://example.com/file.bin" --json
 
 ```bash
 git clone https://github.com/likangdi-code/clash-verge-url-proxy-cli
-cd clash-pick
-node clash-pick.mjs list        # 直接运行
+cd clash-verge-url-proxy-cli
+node clash-proxy.mjs list        # 直接运行
 ```
 
 前置：本机运行着 Clash Verge（网址代理版）（或任意暴露 external-controller 的 mihomo，用 `CLASH_API` 指定）。

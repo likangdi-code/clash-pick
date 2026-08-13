@@ -1,11 +1,11 @@
 #!/usr/bin/env sh
-# install.sh — clash-pick 一键安装（macOS / Linux，只装工具，不装 skill）
+# install.sh — clash-proxy 一键安装（macOS / Linux，只装工具，不装 skill）
 #
 # 用法（终端一行）：
 #   curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main/install.sh | sh
 #
 # 效果：
-#   - 安装 clash-pick.mjs + clash-pick 命令到 ~/.local/bin 并加入 PATH
+#   - 安装 clash-proxy.mjs + clash-proxy 命令到 ~/.local/bin 并加入 PATH
 #   - 幂等：重复运行只覆盖更新
 #   - 只装工具；skill 由各 agent 工具单独部署（deploy-agents.ps1，需要 pwsh）
 set -e
@@ -23,22 +23,22 @@ fi
 mkdir -p "$INSTALL_DIR"
 
 # 3. 下载主脚本 + 独立下载引擎 + vendored js-yaml（dl 多线程下载 / add 解析 YAML 用）
-echo "下载 clash-pick.mjs -> $INSTALL_DIR"
-curl -fsSL "$REPO/clash-pick.mjs" -o "$INSTALL_DIR/clash-pick.mjs"
+echo "下载 clash-proxy.mjs -> $INSTALL_DIR"
+curl -fsSL "$REPO/clash-proxy.mjs" -o "$INSTALL_DIR/clash-proxy.mjs"
 curl -fsSL "$REPO/downloader.mjs" -o "$INSTALL_DIR/downloader.mjs"
 mkdir -p "$INSTALL_DIR/vendor"
 curl -fsSL "$REPO/vendor/js-yaml.mjs" -o "$INSTALL_DIR/vendor/js-yaml.mjs"
 
-# 4. 生成 clash-pick + clash-dl 命令包装
-cat > "$INSTALL_DIR/clash-pick" <<'WRAP'
+# 4. 生成 clash-proxy + clash-dl 命令包装
+cat > "$INSTALL_DIR/clash-proxy" <<'WRAP'
 #!/usr/bin/env sh
-exec node "$(dirname "$0")/clash-pick.mjs" "$@"
+exec node "$(dirname "$0")/clash-proxy.mjs" "$@"
 WRAP
-chmod +x "$INSTALL_DIR/clash-pick"
+chmod +x "$INSTALL_DIR/clash-proxy"
 
 cat > "$INSTALL_DIR/clash-dl" <<'WRAP'
 #!/usr/bin/env sh
-exec node "$(dirname "$0")/clash-pick.mjs" dl "$@"
+exec node "$(dirname "$0")/clash-proxy.mjs" dl "$@"
 WRAP
 chmod +x "$INSTALL_DIR/clash-dl"
 
@@ -69,10 +69,10 @@ fi
 
 # 7. 汇总提示
 echo ""
-echo "✓ clash-pick 工具安装完成（未安装 skill）。"
+echo "✓ clash-proxy 工具安装完成（未安装 skill）。"
 echo "  新开终端后可直接："
-echo "    clash-pick list"
-echo "    clash-pick pick \"https://example.com/big-file.zip\""
+echo "    clash-proxy list"
+echo "    clash-proxy pick \"https://example.com/big-file.zip\""
 echo "    clash-dl \"https://example.com/big-file.zip\"   （独立多线程下载）"
 echo ""
 echo "▶ 部署 skill 到本机所有 agent 工具（需 pwsh；macOS: brew install powershell）："

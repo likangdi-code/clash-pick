@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * clash-pick — 下载前为 URL 选择最低延迟节点的 CLI 工具
+ * clash-proxy — 下载前为 URL 选择最低延迟节点的 CLI 工具
  *
  * 通过 mihomo 的 external-controller（默认走 Clash Verge Rev 的命名管道
  * \\.\pipe\verge-mihomo，免配置；也可用 CLASH_API 指向 HTTP 端口）：
@@ -11,13 +11,13 @@
  *   5. 输出结果（人类可读 / --json 机器可读，供 agent 解析后调用下载器）
  *
  * 用法：
- *   node clash-pick.mjs <url>                 # 测速 + 自动切最低延迟节点
- *   node clash-pick.mjs pick <url>            # 同上（显式）
- *   node clash-pick.mjs add <url>             # 自动建网址代理组 + 测速切换
- *   node clash-pick.mjs test <url>            # 只测速，不切换
- *   node clash-pick.mjs dl <url>              # 测速切换后直接走代理多线程下载
- *   node clash-pick.mjs list                  # 列出节点与网址代理组
- *   node clash-pick.mjs current               # 查看当前选中
+ *   node clash-proxy.mjs <url>                 # 测速 + 自动切最低延迟节点
+ *   node clash-proxy.mjs pick <url>            # 同上（显式）
+ *   node clash-proxy.mjs add <url>             # 自动建网址代理组 + 测速切换
+ *   node clash-proxy.mjs test <url>            # 只测速，不切换
+ *   node clash-proxy.mjs dl <url>              # 测速切换后直接走代理多线程下载
+ *   node clash-proxy.mjs list                  # 列出节点与网址代理组
+ *   node clash-proxy.mjs current               # 查看当前选中
  *
  * 选项：
  *   --group <组名>     指定要切换的组（默认自动探测，无命中则 GLOBAL）
@@ -40,7 +40,7 @@
  *   CLASH_SECRET  HTTP 模式下的 secret（命名管道无需）
  *
  * 下载走代理：curl --proxy http://127.0.0.1:7897 -L -O <url>
- * 多线程下载：clash-pick dl <url>（内置 Node 分片下载器；装了 aria2c 则自动用它）
+^ * 多线程下载：clash-proxy dl <url>（内置 Node 分片下载器；装了 aria2c 则自动用它）
  */
 import net from 'node:net'
 import http from 'node:http'
@@ -298,7 +298,7 @@ async function main() {
   }
   if (headerList.length) opts.headers = parseHeaders(headerList)
 
-  // 区分「隐式 pick」（clash-pick <url>）与「显式 pick」（clash-pick pick <url>）
+  // 区分「隐式 pick」（clash-proxy <url>）与「显式 pick」（clash-proxy pick <url>）
   const rawCmd = positional[0] ?? ''
   let cmd, argUrl
   if (['pick', 'test', 'add', 'dl', 'download', 'list', 'current'].includes(rawCmd)) {
@@ -315,15 +315,15 @@ async function main() {
   if (cmd === 'dl' && argUrl) return cmdDownload(argUrl, opts)
   if ((cmd === 'pick' || cmd === 'test') && argUrl) return cmdPick(argUrl, opts, cmd === 'test')
   if (cmd === 'pick' || cmd === 'test') {
-    console.error(`用法: node clash-pick.mjs ${cmd} <url> [--group 组名] [--timeout ms] [--json]`)
+    console.error(`用法: node clash-proxy.mjs ${cmd} <url> [--group 组名] [--timeout ms] [--json]`)
     process.exit(2)
   }
   if (cmd === 'add') {
-    console.error('用法: node clash-pick.mjs add <url> [--timeout ms] [--json]')
+    console.error('用法: node clash-proxy.mjs add <url> [--timeout ms] [--json]')
     process.exit(2)
   }
   if (cmd === 'dl') {
-    console.error('用法: node clash-pick.mjs dl <url> [-o 文件] [-d 目录] [-t 线程数] [-H "Authorization: Bearer xxx"] [--no-proxy] [--force-node] [--json]')
+    console.error('用法: node clash-proxy.mjs dl <url> [-o 文件] [-d 目录] [-t 线程数] [-H "Authorization: Bearer xxx"] [--no-proxy] [--force-node] [--json]')
     process.exit(2)
   }
   console.error(`未知命令: ${cmd}`)
@@ -492,7 +492,7 @@ async function cmdPick(url, opts, testOnly) {
   else if (testOnly) console.log('(仅测速，未切换)')
   if (!isUrlProxyName(group)) {
     console.log('ℹ  该域名无网址代理组，已回退 GLOBAL。rule 模式下只有未匹配规则的流量走它；')
-    console.log('   如需精准路由，请先用 `clash-pick add <url>` 自动建组。')
+    console.log('   如需精准路由，请先用 `clash-proxy add <url>` 自动建组。')
   }
   console.log(`下载: curl --proxy http://127.0.0.1:${process.env.CLASH_MIXED_PORT ?? DEFAULT_MIXED_PORT} -L -O '${url}'`)
 }
@@ -558,7 +558,7 @@ async function cmdDownload(url, opts) {
         proxyPort = null
         offline = true
       } else {
-        console.error('clash-pick 选节点失败:', e.message)
+        console.error('clash-proxy 选节点失败:', e.message)
         console.error('已跳过选节点，仍尝试走代理下载。')
       }
     }
@@ -637,7 +637,7 @@ main().catch((e) => {
     console.error(`⚠️ 未检测到 Clash 在运行（连接失败: ${e.message}）`)
     console.error('已跳过测速。如需走代理选节点下载，请先启动 Clash Verge Rev。')
   } else {
-    console.error('clash-pick 错误:', e.message)
+    console.error('clash-proxy 错误:', e.message)
   }
   process.exit(1)
 })

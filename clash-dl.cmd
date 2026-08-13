@@ -1,3 +1,3 @@
 @echo off
-rem clash-dl: standalone multi-threaded downloader (proxy/direct), wraps clash-pick dl
-node "%~dp0clash-pick.mjs" dl %*
+rem clash-dl: standalone multi-threaded downloader (proxy/direct), wraps clash-proxy dl
+node "%~dp0clash-proxy.mjs" dl %*
