@@ -15,7 +15,7 @@
   结束后会汇总「已安装到哪些」「未检测到哪些」，方便你确认还有哪些工具需要单独处理。
 #>
 param(
-  [string]$SkillUrl = 'https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main/skills/clash-pick/SKILL.md',
+  [string]$SkillUrl = 'https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main/skills/clash-pick/SKILL.md',
   [string]$SourcePath = '',
   [string]$Agent = ''   # 只部署指定工具：claude/gemini/codex/opencode/hermes/openclaw/grok/agents
 )

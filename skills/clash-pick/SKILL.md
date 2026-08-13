@@ -21,7 +21,7 @@ description: >
 3. `clash-pick` 命令可用。检查：PowerShell 里 `Get-Command clash-pick`。
    没有 → 一键安装：
    ```powershell
-   irm https://raw.githubusercontent.com/likangdi-code/clash-pick-cli/main/install.ps1 | iex
+   irm https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main/install.ps1 | iex
    ```
 
 ## 先判断 Clash 是否在运行（未运行则跳过测速）
@@ -134,5 +134,5 @@ curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
 
 ## 参考
 
-- 仓库：https://github.com/likangdi-code/clash-pick-cli（README 有完整说明）
+- 仓库：https://github.com/likangdi-code/clash-verge-url-proxy-cli（README 有完整说明）
 - 配套 GUI 项目（网址代理功能来源）：https://github.com/likangdi-code/clash-verge-url-proxy
