@@ -5,17 +5,16 @@
  * 混合引擎：
  *   1. 探测 aria2c（业界最强开源多线程下载器）：装了 → spawn aria2c 满速下载
  *      （-x 多连接、-s 分片、-k 分片大小、-c 断点续传、--all-proxy 走 mihomo 混入端口）
- *   2. 没装 → 内置纯 Node 零依赖多线程下载器：
- *      - GET + Range 探测（Content-Length / Accept-Ranges / 文件名 / 重定向）
- *      - 支持 Range → 按 Range 分片并发下载到 .part 文件，完成后拼接
- *      - 不支持 Range / 大小未知 / 需认证（401/403）→ 降级单线程流式下载
- *      - 走代理：http 用绝对 URI 直发代理端口；https 用 CONNECT 隧道 + TLS
- *      - 断点续传：已存在且大小匹配的 .part 分片自动跳过；完整文件命中直接完成
+ *   2. 没装 → 内置纯 Node 零依赖下载器（基于内置 fetch / undici）
+ *
+ * 关键设计：用 Node 内置 fetch 预解析重定向链（redirect:follow 自动跨域剥离
+ * Authorization/Cookie），解决 aria2c 的硬伤——aria2c 会把 --header 原样带到
+ * 重定向后的 CDN 域名导致 401。预解析拿到最终签名 URL 后再交给 aria2c，缺陷绕开。
+ * 零 npm 依赖：fetch / undici 是 Node 18.17+ 内置。
  *
  * 非公开 URL（需认证）支持：
- *   - --header "Name: value" 可多次指定（如 Authorization / Cookie），
- *     探测、分片、单线程、aria2c 全部透传
- *   - 一次性签名 / 受限 URL：多线程分片遇 401/403/429 自动清理降级单线程
+ *   - --header "Name: value" 可多次指定（如 Authorization / Cookie）
+ *   - fetch 预解析自动处理「认证 URL 跨域 302 → 签名 CDN」的敏感头剥离
  *   - probe 遇 401/403 时给出「用 --header 指定认证头」的清晰提示
  *
  * 用法（一般由 clash-pick.mjs dl 调用，也可独立使用）：
@@ -24,11 +23,8 @@
  *
  * 返回：Promise<{ok, engine, filePath, bytes, threads, durationMs, error?}>
  */
-import net from 'node:net'
-import tls from 'node:tls'
 import fs from 'node:fs'
 import path from 'node:path'
-import { Transform } from 'node:stream'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
@@ -120,256 +116,101 @@ function formatSpeed(bytes, ms) {
   return formatBytes((bytes / ms) * 1000) + '/s'
 }
 
-/** 从 URL / Content-Disposition 推断文件名 */
+/** 从 URL / Content-Disposition 推断文件名（净化：仅取 basename，防路径穿越） */
 function guessFilename(urlStr, disposition) {
+  let name = null
   if (disposition) {
     const utf8 = disposition.match(/filename\*=(?:UTF-8'')?["']?([^"';]+)["']?/i)
-    if (utf8) return decodeURIComponent(utf8[1])
-    const plain = disposition.match(/filename=["']?([^"';]+)["']?/i)
-    if (plain) return plain[1]
+    if (utf8) name = decodeURIComponent(utf8[1])
+    else {
+      const plain = disposition.match(/filename=["']?([^"';]+)["']?/i)
+      if (plain) name = plain[1]
+    }
   }
-  const u = new URL(urlStr)
-  const base = path.basename(u.pathname)
-  if (base && base !== '/' && base !== '\\') return decodeURIComponent(base)
-  return `download-${Date.now()}`
-}
-
-/** chunked 解码转换流 */
-function createDechunker() {
-  let state = 'size' // size | sizeLF | data | sizeCRLF | done
-  let remaining = 0
-  let sizeBuf = ''
-  return new Transform({
-    transform(chunk, _enc, cb) {
-      let pos = 0
-      const push = (b) => { if (b.length) this.push(b) }
-      while (pos < chunk.length) {
-        if (state === 'size') {
-          const c = String.fromCharCode(chunk[pos])
-          if (c === '\r') { state = 'sizeLF'; pos++ }
-          else { sizeBuf += c; pos++ }
-        } else if (state === 'sizeLF') {
-          if (chunk[pos] === 0x0a) {
-            remaining = parseInt(sizeBuf.trim().split(';')[0], 16) || 0
-            sizeBuf = ''
-            state = remaining === 0 ? 'done' : 'data'
-          }
-          pos++
-        } else if (state === 'data') {
-          const take = Math.min(remaining, chunk.length - pos)
-          push(chunk.subarray(pos, pos + take))
-          remaining -= take
-          pos += take
-          if (remaining === 0) state = 'sizeCRLF'
-        } else if (state === 'sizeCRLF') {
-          pos += 2 // 跳过 chunk 末尾 \r\n
-          state = 'size'
-        } else if (state === 'done') {
-          pos = chunk.length
-        }
-      }
-      cb()
-    },
-  })
-}
-
-// ─── 代理/直连 HTTP 请求（返回 {statusCode, headers, stream}）─────────────────
-//
-// proxyPort 存在 → 走 HTTP 代理（mihomo 混入端口）：
-//   http  : 绝对 URI 形式 GET http://host/path 发给代理端口
-//   https : CONNECT 隧道 → TLS → origin-form GET
-// proxyPort 为 null → 直连
-//
-// 超时策略（避免连接卡死导致 Promise 永久挂起）：
-//   - 连接建立超时 CONNECT_TIMEOUT（默认 20s）
-//   - 空闲超时 IDLE_TIMEOUT（默认 60s，收到任意数据即重置；大文件持续传输不会误杀）
-function proxiedRequest(urlStr, proxyPort, { method = 'GET', headers = {}, range } = {}) {
-  const CONNECT_TIMEOUT = 20000
-  const IDLE_TIMEOUT = 60000
-  return new Promise((resolve, reject) => {
+  if (name == null) {
     const u = new URL(urlStr)
-    const isHttps = u.protocol === 'https:'
-    const targetPort = u.port || (isHttps ? 443 : 80)
-    const allHeaders = { 'User-Agent': 'clash-pick', Host: u.host, ...headers }
-    if (range) allHeaders.Range = range
-
-    // 在已连好的 socket（或 TLS socket）上发请求、解析响应头、泵 body 到 stream
-    const sendOn = (sock) => {
-      const reqPath = proxyPort && !isHttps ? urlStr : u.pathname + u.search
-      const lines = [`${method} ${reqPath} HTTP/1.1`]
-      for (const [k, v] of Object.entries(allHeaders)) lines.push(`${k}: ${v}`)
-      lines.push('Connection: close')
-      sock.write(lines.join('\r\n') + '\r\n\r\n')
-
-      let headBuf = Buffer.alloc(0)
-      let responded = false
-      const out = new Transform({ transform(c, _e, cb) { cb(null, c) } })
-      let exposed = out
-
-      // 空闲超时：每次收到数据重置；卡死（无数据、连接不关）时强制失败
-      const armIdle = () => { try { sock.setTimeout(IDLE_TIMEOUT) } catch {} }
-      armIdle()
-      sock.on('timeout', () => {
-        sock.destroy(new Error(`下载空闲超时（${IDLE_TIMEOUT / 1000}s 无数据）`))
-      })
-
-      sock.on('data', (d) => {
-        armIdle()
-        if (!responded) {
-          headBuf = Buffer.concat([headBuf, d])
-          const sep = headBuf.indexOf('\r\n\r\n')
-          if (sep < 0) return
-          responded = true
-          const headText = headBuf.subarray(0, sep).toString('utf8')
-          const statusMatch = headText.match(/^HTTP\/1\.[01] (\d+)/)
-          if (!statusMatch) { out.destroy(new Error('无法解析响应状态行')); return }
-          const hdrs = {}
-          for (const line of headText.split('\r\n').slice(1)) {
-            const i = line.indexOf(':')
-            if (i > 0) hdrs[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim()
-          }
-          if (hdrs['transfer-encoding'] === 'chunked') exposed = out.pipe(createDechunker())
-          resolve({ statusCode: Number(statusMatch[1]), headers: hdrs, stream: exposed })
-          const bodyStart = headBuf.subarray(sep + 4)
-          if (bodyStart.length) out.write(bodyStart)
-        } else {
-          out.write(d)
-        }
-      })
-      sock.on('end', () => {
-        if (responded) out.end()
-        else { out.destroy(new Error('连接提前关闭')); reject(new Error('连接提前关闭')) }
-      })
-      sock.on('error', (e) => {
-        out.destroy(e)
-        if (!responded) reject(e)
-      })
-    }
-
-    // 通用：连接建立超时
-    const withConnectTimeout = (s) => {
-      s.setTimeout(CONNECT_TIMEOUT)
-      s.on('timeout', () => s.destroy(new Error('连接超时')))
-      return s
-    }
-
-    if (!proxyPort) {
-      // 直连
-      if (isHttps) {
-        const s = withConnectTimeout(tls.connect({ host: u.hostname, port: targetPort, servername: u.hostname }))
-        s.on('secureConnect', () => sendOn(s))
-        s.on('error', reject)
-      } else {
-        const s = withConnectTimeout(net.connect(targetPort, u.hostname))
-        s.on('connect', () => sendOn(s))
-        s.on('error', reject)
-      }
-      return
-    }
-
-    // 走 HTTP 代理
-    if (!isHttps) {
-      const s = withConnectTimeout(net.connect(proxyPort, '127.0.0.1'))
-      s.on('connect', () => sendOn(s))
-      s.on('error', reject)
-      return
-    }
-
-    // https → CONNECT 隧道
-    const conn = withConnectTimeout(net.connect(proxyPort, '127.0.0.1'))
-    conn.on('connect', () => {
-      conn.write(`CONNECT ${u.hostname}:${targetPort} HTTP/1.1\r\nHost: ${u.hostname}:${targetPort}\r\n\r\n`)
-    })
-    let cbuf = Buffer.alloc(0)
-    let tunneled = false
-    conn.on('data', (d) => {
-      if (tunneled) return
-      cbuf = Buffer.concat([cbuf, d])
-      const sep = cbuf.indexOf('\r\n\r\n')
-      if (sep < 0) return
-      const headText = cbuf.subarray(0, sep).toString('utf8')
-      if (!/^HTTP\/1\.[01] 200/.test(headText)) {
-        conn.destroy()
-        return reject(new Error('代理 CONNECT 失败: ' + (headText.split('\r\n')[0] ?? '?') + '（代理端口不正确？）'))
-      }
-      tunneled = true
-      conn.removeAllListeners('data') // 交还剩余字节给 TLS 层
-      conn.unshift(cbuf.subarray(sep + 4))
-      const tlsSock = tls.connect({ socket: conn, servername: u.hostname })
-      tlsSock.on('secureConnect', () => sendOn(tlsSock))
-      tlsSock.on('error', reject)
-    })
-    conn.on('error', reject)
-  })
-}
-
-// ─── 内置 Node 下载器 ────────────────────────────────────────────────────────
-
-/** 连接类错误码（代理/服务器瞬时抖动时重试；供 clash-pick.mjs 导入判断降级） */
-export const RETRYABLE_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ENETUNREACH', 'ECONNABORTED'])
-
-/** 带重试的 proxiedRequest：连接类错误重试 2 次（应对 mihomo 重载/测速抖动） */
-async function proxiedRequestRetry(urlStr, proxyPort, opts, retries = 2) {
-  let lastErr
-  for (let i = 0; i <= retries; i++) {
-    try {
-      return await proxiedRequest(urlStr, proxyPort, opts)
-    } catch (e) {
-      lastErr = e
-      if (i < retries && RETRYABLE_CODES.has(e?.code)) {
-        await new Promise((r) => setTimeout(r, 400 * (i + 1)))
-        continue
-      }
-      throw e
-    }
+    const base = path.basename(u.pathname)
+    if (base && base !== '/' && base !== '\\') name = decodeURIComponent(base)
   }
-  throw lastErr
+  if (name == null) name = `download-${Date.now()}`
+  // 净化：去掉路径分隔符和危险字符，仅保留文件名
+  return path.basename(name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_'))
 }
+
+// ─── 连接类错误码（供 clash-pick.mjs 导入判断降级）──────────────────────────
+
+export const RETRYABLE_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ENETUNREACH', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'])
+
+// ─── 代理配置：Node 内置 fetch 通过 HTTPS_PROXY/HTTP_PROXY 环境变量走代理 ────
+//
+// undici 的 fetch 读取 HTTPS_PROXY / HTTP_PROXY / NO_PROXY 环境变量（Node 18+ 内置支持）。
+// 需要走代理时在调用前设置这些变量；NO_PROXY 保护本地直连。此函数幂等（不覆盖用户已有值）。
+
+function ensureProxyEnv(proxyPort) {
+  if (!proxyPort) return
+  if (!process.env.HTTPS_PROXY && !process.env.https_proxy) {
+    process.env.HTTPS_PROXY = `http://127.0.0.1:${proxyPort}`
+  }
+  if (!process.env.HTTP_PROXY && !process.env.http_proxy) {
+    process.env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`
+  }
+  const noProxy = process.env.NO_PROXY || process.env.no_proxy || ''
+  if (!noProxy.split(',').map((s) => s.trim()).includes('127.0.0.1')) {
+    process.env.NO_PROXY = [noProxy, '127.0.0.1,localhost'].filter(Boolean).join(',')
+  }
+}
+
+// ─── 预解析：fetch 跟随重定向 + 自动跨域剥离敏感头 ──────────────────────────
+//
+// 用 GET + Range: bytes=0-0 探测，同时拿 Content-Length / Accept-Ranges / 文件名 /
+// 处理重定向。fetch 的 redirect:'follow' 在跨域跳转时自动剥离 Authorization/Cookie
+// （Node 内置 undici，CVE-2023-45143 已修复）——这正是 aria2c 做不到的关键能力。
+
+/** 跨域重定向后需剥离的敏感头（认证签名只对原域有效） */
+const SENSITIVE_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie'])
 
 async function probe(urlStr, proxyPort, headers) {
-  // 用 GET + Range: bytes=0-0 探测：同时拿 Content-Length / Accept-Ranges / 文件名 / 处理重定向
+  ensureProxyEnv(proxyPort)
   const MAX_REDIRECT = 8
-  // 跨 host 重定向时需剥离敏感头：认证签名只对原域有效（如 api.github.com 302 → azure blob，
-  // 仍带 Authorization 会让目标 401）。剥离后返回给下载阶段复用。
-  const SENSITIVE_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie'])
-  const stripSensitive = (h) => {
-    if (!h) return h
-    const out = {}
-    for (const [k, v] of Object.entries(h)) if (!SENSITIVE_HEADERS.has(k.toLowerCase())) out[k] = v
-    return out
-  }
   let cur = urlStr
-  let effectiveHeaders = headers
+  const h = { ...(headers ?? {}) }
+  if (!h['User-Agent']) h['User-Agent'] = 'clash-pick'
   for (let i = 0; i < MAX_REDIRECT; i++) {
-    const res = await proxiedRequestRetry(cur, proxyPort, { range: 'bytes=0-0', headers: effectiveHeaders })
-    if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-      const next = new URL(res.headers.location, cur)
-      if (next.host !== new URL(cur).host) effectiveHeaders = stripSensitive(effectiveHeaders)
-      cur = next.toString()
-      res.stream.resume() // 丢弃探测 body
-      continue
-    }
-    res.stream.resume() // 丢弃探测 body
-    // 非公开 URL：401/403 说明缺认证（或 URL 签名已失效），给出清晰提示
-    if (res.statusCode === 401 || res.statusCode === 403) {
+    const res = await fetch(cur, {
+      headers: { ...h, Range: 'bytes=0-0' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20000),
+    })
+    const status = res.status
+    const finalUrl = res.url || cur
+    await res.body?.cancel().catch(() => {})
+    // 非公开 URL：401/403 说明缺认证（或签名失效）
+    if (status === 401 || status === 403) {
       const authNeeded = !headers || Object.keys(headers).length === 0
       throw new Error(
-        `HTTP ${res.statusCode}（${authNeeded ? '非公开 URL 需要认证，请用 --header "Authorization: Bearer <token>" 等指定认证头' : '认证失败或签名过期，请检查 --header 提供的认证信息'}）`,
+        `HTTP ${status}（${authNeeded ? '非公开 URL 需要认证，请用 --header "Authorization: Bearer <token>" 等指定认证头' : '认证失败或签名过期，请检查 --header 提供的认证信息'}）`,
       )
     }
-    const cr = res.headers['content-range'] // 'bytes 0-0/12345'
+    const cr = res.headers.get('content-range') // 'bytes 0-0/12345'
     let total = null
     if (cr) {
       const m = cr.match(/\/(\d+)$/)
       if (m) total = Number(m[1])
     }
-    if (total == null && res.headers['content-length']) total = Number(res.headers['content-length'])
+    if (total == null && res.headers.get('content-length')) total = Number(res.headers.get('content-length'))
+    // 跨域（host 变化）→ 剥离敏感头供下载阶段复用；同域 → 保留（可能仍需认证）
+    let effectiveHeaders = headers
+    if (new URL(finalUrl).host !== new URL(urlStr).host) {
+      effectiveHeaders = Object.fromEntries(
+        Object.entries(headers ?? {}).filter(([k]) => !SENSITIVE_HEADERS.has(k.toLowerCase())),
+      )
+    }
     return {
-      url: cur,
+      url: finalUrl,
       total,
-      acceptsRange: res.headers['accept-ranges'] === 'bytes' || !!cr,
-      disposition: res.headers['content-disposition'],
-      statusCode: res.statusCode,
+      acceptsRange: res.headers.get('accept-ranges') === 'bytes' || !!cr,
+      disposition: res.headers.get('content-disposition'),
+      statusCode: status,
       headers: effectiveHeaders,
     }
   }
@@ -377,25 +218,21 @@ async function probe(urlStr, proxyPort, headers) {
 }
 
 /**
- * 内置多线程下载
+ * 内置下载（基于 Node 内置 fetch / undici，零 npm 依赖）
  * @param {string} urlStr 目标 URL
- * @param {{proxyPort:number|null, threads:number, output?:string, dir?:string, onProgress?:Function, headers?:Object, signal?:AbortSignal}} opts
+ * @param {{proxyPort:number|null, threads:number, output?:string, dir?:string, onProgress?:Function, headers?:Object}} opts
  */
 export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir = '.', onProgress, headers } = {}) {
   const info = await probe(urlStr, proxyPort, headers)
-  // probe 跨 host 重定向后可能已剥离敏感头，下载阶段复用剥离后的 headers（避免把
-  // Authorization 打到签名/Blob 域名返回 401）
-  const effHeaders = info.headers ?? headers
   if (info.statusCode >= 400) throw new Error(`HTTP ${info.statusCode}（服务器返回错误）`)
+  // probe 已处理跨域重定向的敏感头剥离，下载阶段复用剥离后的 headers
+  const effHeaders = info.headers ?? headers
   const filename = output ?? guessFilename(info.url, info.disposition)
   // -o 传绝对路径时直接用；相对路径/未指定时拼到 -d 目录（默认当前目录）
   const filePath = filename && path.isAbsolute(filename) ? filename : path.join(dir, filename)
   const started = Date.now()
+  await fs.promises.mkdir(dir, { recursive: true })
 
-  const cleanPath = (p) => {
-    try { if (fs.existsSync(p)) fs.unlinkSync(p) } catch {}
-  }
-  const partOf = (i) => `${filePath}.part${i}`
   const report = (doneBytes, threadsUsed) => {
     if (!onProgress) return
     onProgress({
@@ -416,19 +253,33 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
     return { ok: true, engine: 'node', filePath, bytes: info.total, threads: 1, durationMs: Date.now() - started, resumed: true }
   }
 
-  // 单线程流式下载（也用于非公开 URL 降级）
+  // 单线程流式下载（fetch 流写入文件）
   const downloadSingle = async () => {
-    const res = await proxiedRequestRetry(info.url, proxyPort, { headers: effHeaders })
-    if (res.statusCode >= 400) throw new Error(`HTTP ${res.statusCode}`)
-    await fs.promises.mkdir(dir, { recursive: true })
+    const res = await fetch(info.url, {
+      headers: { ...(effHeaders ?? {}), 'User-Agent': 'clash-pick' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(120000),
+    })
+    if (res.status >= 400) throw new Error(`HTTP ${res.status}`)
+    if (!res.body) throw new Error('响应无 body')
     const ws = fs.createWriteStream(filePath)
+    const reader = res.body.getReader()
     let done = 0
-    res.stream.on('data', (d) => { done += d.length; report(done, 1) })
+    const pump = async () => {
+      while (true) {
+        const { value, done: d } = await reader.read()
+        if (d) break
+        if (value?.length) {
+          ws.write(value)
+          done += value.length
+          report(done, 1)
+        }
+      }
+      ws.end()
+    }
     await new Promise((resolvePromise, rejectPromise) => {
-      res.stream.pipe(ws)
-      ws.on('finish', resolvePromise)
+      pump().then(resolvePromise, rejectPromise)
       ws.on('error', rejectPromise)
-      res.stream.on('error', rejectPromise)
     })
     return { ok: true, engine: 'node', filePath, bytes: done, threads: 1, durationMs: Date.now() - started }
   }
@@ -437,8 +288,7 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
   const useMulti = !!info.acceptsRange && info.total != null && info.total >= 256 * 1024
   if (!useMulti) return downloadSingle()
 
-  // ─── 多线程 Range 分片并发（worker 池）───
-  await fs.promises.mkdir(dir, { recursive: true })
+  // ─── 多线程 Range 分片并发（fetch + Range）───
   const total = info.total
   const n = Math.max(1, Math.min(threads, Math.ceil(total / (256 * 1024))))
   const CONCURRENCY = Math.min(n, threads, 8)
@@ -447,6 +297,10 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
     const start = Math.floor((total * i) / n)
     const end = Math.floor((total * (i + 1)) / n) - 1
     ranges.push([start, end])
+  }
+  const partOf = (i) => `${filePath}.part${i}`
+  const cleanPath = (p) => {
+    try { if (fs.existsSync(p)) fs.unlinkSync(p) } catch {}
   }
 
   const doneParts = new Array(n).fill(false)
@@ -462,6 +316,15 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
         else cleanPath(p) // 不完整分片 → 重下
       } catch { cleanPath(p) }
     }
+  }
+
+  const fetchPart = async (start, end) => {
+    const res = await fetch(info.url, {
+      headers: { ...(effHeaders ?? {}), 'User-Agent': 'clash-pick', Range: `bytes=${start}-${end}` },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(60000),
+    })
+    return res
   }
 
   const timer = setInterval(() => report(doneBytes, n), 500)
@@ -490,11 +353,19 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
             else startOne()
           })
           ws.on('error', (e) => { if (!errored) { errored = e; rejectPromise(e) } })
-          proxiedRequestRetry(info.url, proxyPort, { range: `bytes=${start}-${end}`, headers: effHeaders }).then((res) => {
-            if ([401, 403, 429].includes(res.statusCode)) { forbidden = true; res.stream.resume(); rejectPromise(new Error(`分片 ${idx} HTTP ${res.statusCode}`)); return }
-            if (res.statusCode >= 400) throw new Error(`分片 ${idx} HTTP ${res.statusCode}`)
-            res.stream.pipe(ws)
-            res.stream.on('error', (e) => { if (!errored) { errored = e; rejectPromise(e) } })
+          fetchPart(start, end).then((res) => {
+            if ([401, 403, 429].includes(res.status)) { forbidden = true; res.body?.cancel().catch(() => {}); rejectPromise(new Error(`分片 ${idx} HTTP ${res.status}`)); return }
+            if (res.status >= 400) throw new Error(`分片 ${idx} HTTP ${res.status}`)
+            if (!res.body) throw new Error(`分片 ${idx} 无 body`)
+            const reader = res.body.getReader()
+            const pump = () => {
+              reader.read().then(({ value, done: d }) => {
+                if (d) return ws.end()
+                if (value?.length) ws.write(value)
+                pump()
+              }).catch((e) => { if (!errored) { errored = e; rejectPromise(e) } })
+            }
+            pump()
           }).catch((e) => { if (!errored) { errored = e; rejectPromise(e) } })
         }
         if (activeCount === 0 && completed === n) resolvePromise()
@@ -540,15 +411,33 @@ export async function downloadNode(urlStr, { proxyPort, threads = 4, output, dir
 
 /**
  * 下载（混合引擎：优先 aria2c，缺失用内置 Node 下载器）
+ * aria2c 路径：先用 fetch 预解析重定向链（跨域自动剥敏感头），拿到最终签名 URL
+ * 后交给 aria2c——aria2c 无需认证头，绕开它「把 --header 带到 CDN」的硬伤。
  * @param {string} urlStr
- * @param {{proxyPort:number|null, threads?:number, output?:string, dir?:string, forceNode?:boolean, headers?:Object, onProgress?:Function}} opts
+ * @param {{proxyPort:number|null, threads?:number, output?:string, dir?:string, forceNode?:boolean, headers?:Object, jsonMode?:boolean, onProgress?:Function}} opts
  */
 export async function download(urlStr, { proxyPort, threads = 8, output, dir = '.', forceNode = false, headers, jsonMode, onProgress } = {}) {
   const aria = forceNode ? null : findAria2c()
   if (aria) {
-    // aria2c 自带进度条（非 json 继承 stdio）；json 模式静默避免污染输出
-    return runAria2c(urlStr, { proxyPort, threads, output, dir, ariaPath: aria, headers, jsonMode })
+    // 用 fetch 预解析：跟随重定向 + 跨域剥离敏感头，拿到最终 URL 与真实文件名。
+    // aria2c 收到的头 = probe 剥离后的头（跨域后 Authorization/Cookie 只对原域有效）。
+    let finalUrl = urlStr
+    let filename = output
+    let ariaHeaders = headers
+    try {
+      const info = await probe(urlStr, proxyPort, headers)
+      finalUrl = info.url
+      ariaHeaders = info.headers ?? headers
+      if (!filename) filename = guessFilename(info.url, info.disposition)
+    } catch (e) {
+      // 预解析失败（如 401/403 需认证）→ 不降级，直接把错误抛给上层（有清晰提示）
+      // 但若只是探测超时等瞬时问题，仍允许 aria2c 直接尝试原始 URL
+      if (e instanceof Error && /HTTP 401|HTTP 403/.test(e.message)) throw e
+      if (!/重定向|超时|socket|connect/i.test(e.message)) throw e
+    }
+    return runAria2c(finalUrl, { proxyPort, threads, output: filename, dir, ariaPath: aria, headers: ariaHeaders, jsonMode })
   }
+  ensureProxyEnv(proxyPort)
   return downloadNode(urlStr, { proxyPort, threads, output, dir, headers, onProgress })
 }
 
@@ -593,7 +482,9 @@ async function main() {
     } else {
       console.log('✓ aria2c 下载完成（退出码 0）')
     }
-    process.exit(0)
+    // 用 process.exitCode 而非 process.exit：fetch/undici 的异步 handle 在强制退出时
+    // 会触发 libuv 断言（Windows uv async.c）。设 exitCode 后自然退出，让流清理完成。
+    return
   }
   if (res.ok) {
     if (opts.json) {
@@ -601,13 +492,13 @@ async function main() {
     } else {
       console.log(`✓ 下载完成  ${res.filePath}  ${formatBytes(res.bytes)}  （${res.engine} ${res.threads} 线程, ${(res.durationMs / 1000).toFixed(1)}s${last ? ', ' + last.speed : ''}）`)
     }
-    process.exit(0)
+    return
   }
   console.error(`✗ 下载失败: ${res.error ?? `退出码 ${res.exitCode}`}`)
-  process.exit(1)
+  process.exitCode = 1
 }
 
 // 独立运行入口
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  main().catch((e) => { console.error('downloader 错误:', e.message); process.exit(1) })
+  main().catch((e) => { console.error('downloader 错误:', e.message); process.exitCode = 1 })
 }

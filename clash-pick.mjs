@@ -574,6 +574,7 @@ async function cmdDownload(url, opts) {
       dir: opts.dir,
       forceNode: opts.forceNode,
       headers: opts.headers,
+      jsonMode: opts.json,
       onProgress: render,
     })
   } catch (e) {
@@ -588,6 +589,7 @@ async function cmdDownload(url, opts) {
         dir: opts.dir,
         forceNode: opts.forceNode,
         headers: opts.headers,
+        jsonMode: opts.json,
         onProgress: render,
       })
     } else {
@@ -609,9 +611,10 @@ async function cmdDownload(url, opts) {
       bytes: res.bytes ?? null,
       threads: res.threads ?? null,
       durationMs: res.durationMs ?? null,
-      error: res.error ?? (res.exitCode != null ? `aria2c 退出码 ${res.exitCode}` : null),
+      error: res.ok ? null : (res.error ?? (res.exitCode != null ? `aria2c 退出码 ${res.exitCode}` : null)),
     }))
-    process.exit(res.ok ? 0 : 1)
+    if (res.ok) return
+    process.exitCode = 1
   }
 
   if (res.ok) {
@@ -624,7 +627,7 @@ async function cmdDownload(url, opts) {
   } else {
     process.stdout.write('\r\x1b[K')
     console.error(`✗ 下载失败: ${res.error ?? `aria2c 退出码 ${res.exitCode}`}`)
-    process.exit(1)
+    process.exitCode = 1
   }
 }
 
