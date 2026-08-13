@@ -130,7 +130,7 @@ curl --proxy http://127.0.0.1:7897 -L -o <文件名> "<下载URL>"
 ## 边界
 
 - `add` 会自动建组（写增强文件 + reload，走 Verge 命令桥）；`pick` 只对已建组测速切换。全新域名优先用 `add`。
-- 只测速**真实节点**，跳过策略组（Selector/URLTest/Fallback 等）。
+- 测速**真实节点 + DIRECT**（直连），跳过策略组（Selector/URLTest/Fallback 等）。DIRECT 参与测速：国内内容直连快时会自动切 DIRECT，国外内容仍由代理节点胜出。
 
 ## 参考
 
