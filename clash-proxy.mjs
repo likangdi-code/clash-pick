@@ -232,11 +232,18 @@ function detectUrlProxyGroup(rules, host) {
   return best
 }
 
-/** 取 /proxies 中目标组的可选节点（过滤策略组与保留名） */
+/**
+ * 取 /proxies 中目标组的可选节点（过滤策略组与保留名）
+ * 规则：DIRECT 始终放行（直连可能比代理快，尤其国内内容）；其余过滤 RESERVED/
+ * 策略组。REJECT/COMPATIBLE/PASS 等仍排除（拒绝/兼容节点测速无意义）。
+ */
 function groupCandidates(proxies, groupName) {
   const info = proxies[groupName]
   if (!info || !Array.isArray(info.all)) return []
-  return info.all.filter((n) => !RESERVED.has(n) && !isUrlProxyName(n) && !STRATEGY_TYPES.has(proxies[n]?.type))
+  return info.all.filter((n) => {
+    if (n === 'DIRECT') return true // 直连参与测速
+    return !RESERVED.has(n) && !isUrlProxyName(n) && !STRATEGY_TYPES.has(proxies[n]?.type)
+  })
 }
 
 /** 并发池测速：返回 [{name, delay|null, status}] */
