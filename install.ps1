@@ -24,9 +24,6 @@ $ErrorActionPreference = 'Stop'
 # 测试可用 $script:KeyQueue 注入按键流（ConsoleKeyInfo 数组）。
 function Select-AgentMenu {
     param([object[]]$Agents)  # 每个元素含 key / name，默认全部选中
-    # 非交互（管道/自动化，如 irm|iex 由脚本驱动）无法读方向键：直接跳过部署。
-    # 例外：$script:KeyQueue 非空 = 测试注入按键流，仍走完整菜单逻辑。
-    if ([Console]::IsInputRedirected -and @($script:KeyQueue).Count -eq 0) { return @() }
     $items = @()
     foreach ($a in $Agents) {
         $items += [pscustomobject]@{ key = $a.key; label = "[$($a.key)] $($a.name)"; checked = $true }
@@ -50,13 +47,20 @@ function Select-AgentMenu {
         }
         try { [Console]::SetCursorPosition(0, $menuTop + $items.Count) } catch {}
         Write-Host ('  ↑/↓ 移动 · Enter 切换选中 · 「开始部署」回车确认 · Esc 跳过').PadRight($width - 1) -ForegroundColor DarkGray
-        # 读键：测试用 $script:KeyQueue 注入；真实交互读控制台；非交互（EOF）返回空 = 跳过
+        # 读键：测试用 $script:KeyQueue 注入；真实交互读控制台。
+        # 非交互防卡死：stdin 被重定向（管道/自动化）时 KeyAvailable 立即抛错 → 跳过；
+        # 交互终端无人按键时 45 秒超时 → 跳过（真人操作一般远快于此）。
         $key = $null
         try {
             if (@($script:KeyQueue).Count -gt 0) {
                 $key = $script:KeyQueue[0]
                 $script:KeyQueue = @($script:KeyQueue | Select-Object -Skip 1)
             } else {
+                $deadline = [DateTime]::Now.AddSeconds(45)
+                while (-not [Console]::KeyAvailable) {
+                    if ([DateTime]::Now -gt $deadline) { return @() }
+                    Start-Sleep -Milliseconds 100
+                }
                 $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
             }
         } catch { return @() }
