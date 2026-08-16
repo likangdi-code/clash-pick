@@ -1,4 +1,4 @@
-﻿<#
+<#
   install.ps1 — clash-proxy 工具一键安装（只装工具本体，不装 skill）
 
   用法（PowerShell 终端粘贴一行即可）：
