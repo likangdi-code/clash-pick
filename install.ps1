@@ -314,8 +314,7 @@ $targets = @(
   @{ key = 'opencode';  name = 'OpenCode';    dir = "$HOME\.config\opencode" },
   @{ key = 'hermes';    name = 'Hermes';      dir = "$HOME\.hermes" },
   @{ key = 'openclaw';  name = 'OpenClaw';    dir = "$HOME\.openclaw" },
-  @{ key = 'grok';      name = 'Grok';        dir = "$HOME\.grok" },
-  @{ key = 'agents';    name = '共享池 .agents'; dir = "$HOME\.agents" }
+  @{ key = 'grok';      name = 'Grok';        dir = "$HOME\.grok" }
 )
 # 菜单列出全部 agent（已检测到的可选、默认选中；未检测到的置灰「不可选」）
 $menuItems = @()
