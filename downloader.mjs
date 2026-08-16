@@ -25,39 +25,95 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 // ─── aria2c 探测 ─────────────────────────────────────────────────────────────
+
+// Windows 注册表 PATH 兜底：进程的 process.env.PATH 是「改注册表之前」启动的旧快照，
+// 可能不含新装的目录（如 aria2）。这里用 reg query 直接读注册表，把新目录并进扫描列表。
+// 零依赖：spawnSync + TextDecoder（Node 内置 ICU，可解 GBK/OEM 编码）。
+const REG_PATH_KEYS = [
+  'HKCU\\Environment', // 用户 PATH
+  'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', // 系统 PATH
+]
+
+/** 解码 reg.exe 输出：可能为 UTF-8 / GBK（中文 Windows 的 OEM 码页）/ UTF-16LE */
+function decodeReg(buf) {
+  if (!buf || buf.length === 0) return ''
+  // UTF-16LE：带 BOM 或偶数位置大量空字节
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le')
+  let oddNull = 0
+  let evenNull = 0
+  for (let i = 0; i + 1 < buf.length; i += 2) {
+    if (buf[i] === 0) evenNull++
+    if (buf[i + 1] === 0) oddNull++
+  }
+  if (oddNull > evenNull) return buf.toString('utf16le')
+  // 先按 UTF-8 解；出现 U+FFFD 替换符说明是 GBK/OEM（中文 Windows 的 reg 常见）→ 用 GBK 兜底
+  const utf8 = buf.toString('utf8')
+  if (!utf8.includes('\uFFFD')) return utf8
+  try {
+    return new TextDecoder('gbk').decode(buf)
+  } catch {
+    return utf8 // ICU 无 gbk（极少见）时退回，个别中文目录可能乱码，但不影响存在性判断
+  }
+}
+
+/** 读注册表 PATH 值 → 目录列表（展开 %VAR% 后按 path.delimiter 切分）；reg 失败静默跳过 */
+function readRegistryPathDirs() {
+  const dirs = []
+  for (const hive of REG_PATH_KEYS) {
+    try {
+      const r = spawnSync('reg', ['query', hive, '/v', 'Path'], { encoding: 'buffer', windowsHide: true, timeout: 5000 })
+      if (r.error || r.status !== 0) continue // reg 不存在 / 权限不足 / 无该值 → 静默跳过
+      // reg 输出形如：\r\nHKEY_...\r\n    Path    REG_(EXPAND_)?SZ    <值>\r\n\r\n
+      const m = decodeReg(r.stdout).match(/^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/im)
+      if (!m) continue
+      // 展开 %VAR%：SystemRoot / LOCALAPPDATA 等系统级变量在进程 env 快照里都有；缺失则保留原样
+      const value = m[1].replace(/%([^%]+)%/g, (orig, name) => process.env[name] ?? orig)
+      for (const d of value.split(path.delimiter)) {
+        const dir = d.trim()
+        if (dir) dirs.push(dir)
+      }
+    } catch { /* 任何异常静默跳过，不阻断探测 */ }
+  }
+  return dirs
+}
 
 /** 在 PATH 中找 aria2c（win 平台同时兼容 aria2c.exe / .cmd / .bat 包装） */
 export function findAria2c() {
   const names = process.platform === 'win32'
     ? ['aria2c.exe', 'aria2c.cmd', 'aria2c.bat', 'aria2c']
     : ['aria2c']
-  const pathDirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
-  for (const dir of pathDirs) {
-    for (const n of names) {
-      try {
-        const p = path.join(dir, n)
-        if (fs.existsSync(p)) return p
-      } catch { /* 路径非法跳过 */ }
-    }
-  }
-  // Windows 常见安装目录兜底
-  if (process.platform === 'win32') {
-    for (const dir of [
-      path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'aria2'),
-      'C:\\Program Files\\aria2',
-      'C:\\aria2',
-    ]) {
+  const seen = new Set() // 去重，避免同一目录被反复扫描
+  const findIn = (dirs) => {
+    for (const dir of dirs) {
+      if (seen.has(dir)) continue
+      seen.add(dir)
       for (const n of names) {
         try {
           const p = path.join(dir, n)
           if (fs.existsSync(p)) return p
-        } catch {}
+        } catch { /* 路径非法跳过 */ }
       }
     }
+    return null
+  }
+  // 1) 进程 PATH（当前进程快照）
+  const hit = findIn((process.env.PATH ?? '').split(path.delimiter).filter(Boolean))
+  if (hit) return hit
+  // 2) Windows 常见安装目录兜底
+  if (process.platform === 'win32') {
+    const hit2 = findIn([
+      path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'aria2'),
+      'C:\\Program Files\\aria2',
+      'C:\\aria2',
+    ])
+    if (hit2) return hit2
+    // 3) 注册表 PATH 兜底（用户 + 系统）：解决「进程 PATH 是旧快照」找不到新装 aria2 的问题
+    const hit3 = findIn(readRegistryPathDirs())
+    if (hit3) return hit3
   }
   return null
 }
@@ -431,9 +487,13 @@ export async function download(urlStr, { proxyPort, threads = 8, output, dir = '
       if (!filename) filename = guessFilename(info.url, info.disposition)
     } catch (e) {
       // 预解析失败（如 401/403 需认证）→ 不降级，直接把错误抛给上层（有清晰提示）
-      // 但若只是探测超时等瞬时问题，仍允许 aria2c 直接尝试原始 URL
+      // 但若只是探测超时/连接等瞬时问题，仍允许 aria2c 直接尝试原始 URL。
+      // 注意：AbortSignal.timeout 抛的是 DOMException(TimeoutError, "The operation was
+      // aborted due to timeout")——英文 "timeout/aborted" 也必须算瞬时问题，否则探测超时
+      // 会把整个下载 abort 掉（即使 aria2c 本可正常下载）。
       if (e instanceof Error && /HTTP 401|HTTP 403/.test(e.message)) throw e
-      if (!/重定向|超时|socket|connect/i.test(e.message)) throw e
+      const transient = e?.name === 'TimeoutError' || /重定向|超时|timeout|socket|connect|aborted/i.test(e?.message ?? '')
+      if (!transient) throw e
     }
     return runAria2c(finalUrl, { proxyPort, threads, output: filename, dir, ariaPath: aria, headers: ariaHeaders, jsonMode })
   }
