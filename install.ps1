@@ -31,13 +31,15 @@ $ErrorActionPreference = 'Stop'
 # 测试可用 $script:KeyQueue 注入按键流（ConsoleKeyInfo 数组）。
 function Select-AgentMenu {
     param([object[]]$Agents)  # 每个元素含 key / name / enabled
-    # 懒编译 Win32 控制台输入封装（一次会话一次；编译失败则降级 RawUI 轮询）
+    # 懒编译 Win32 控制台输入封装（一次会话一次；编译失败则降级 RawUI 轮询）。
+    # 类型名带版本后缀：同一 PowerShell 窗口跑过旧版脚本会残留旧类型，
+    # 同名 Add-Type 会抛"类型已存在"导致降级（菜单按键失效）。
     if ($null -eq $script:ConInReady) {
         try {
             Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-public static class ClashConIn {
+public static class ClashConInV4 {
     [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetNumberOfConsoleInputEvents(IntPtr hConsoleInput, out uint lpNumberOfEvents);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool ReadConsoleInput(IntPtr hConsoleInput, out INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
@@ -88,7 +90,10 @@ public static class ClashConIn {
     # 菜单开始时清空一次输入队列：丢弃执行本安装命令的 Enter KeyUp 等残留事件，
     # 防止菜单刚显示就误读残留（KeyUp 读不到 KeyDown 会让旧逻辑提前跳过/误触发）
     if ($script:ConInReady) {
-        try { [ClashConIn]::FlushInput() } catch {}
+        try { [ClashConInV4]::FlushInput() } catch {}
+    } elseif (-not $script:WarnedFallback) {
+        Write-Host '（提示：Win32 读键不可用，菜单按键可能无响应）' -ForegroundColor DarkYellow
+        $script:WarnedFallback = $true
     }
     $items = @()
     foreach ($a in $Agents) {
@@ -135,7 +140,7 @@ public static class ClashConIn {
                 $key = 0
                 while ($key -eq 0) {
                     if ([DateTime]::Now -gt $deadline) { return @() }
-                    if ([ClashConIn]::HasInput()) { $key = [ClashConIn]::ReadKeyVk() }
+                    if ([ClashConInV4]::HasInput()) { $key = [ClashConInV4]::ReadKeyVk() }
                     else { Start-Sleep -Milliseconds 100 }
                 }
             } else {
