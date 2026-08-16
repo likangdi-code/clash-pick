@@ -29,17 +29,14 @@ $ErrorActionPreference = 'Stop'
 # Terminal 官方兼容层）；Add-Type 不可用降级 RawUI；自动化（stdin 重定向）
 # HasInput 恒 false → 超时跳过（默认 45s，CLASH_PROXY_MENU_TIMEOUT 可缩短）。
 # 测试可用 $script:KeyQueue 注入按键流（ConsoleKeyInfo 数组）。
-function Select-AgentMenu {
-    param([object[]]$Agents)  # 每个元素含 key / name / enabled
-    # 懒编译 Win32 控制台输入封装（一次会话一次；编译失败则降级 RawUI 轮询）。
-    # 类型名带版本后缀：同一 PowerShell 窗口跑过旧版脚本会残留旧类型，
-    # 同名 Add-Type 会抛"类型已存在"导致降级（菜单按键失效）。
-    if ($null -eq $script:ConInReady) {
-        try {
-            Add-Type -TypeDefinition @'
+# Win32 控制台输入封装（编译一次；失败则菜单降级 RawUI 轮询）。
+# 类型名带版本后缀：同一 PowerShell 窗口跑过旧版脚本会残留旧类型，
+# 同名 Add-Type 会抛"类型已存在"导致降级（菜单按键失效）。
+try {
+    Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-public static class ClashConInV4 {
+public static class ClashConInV5 {
     [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetNumberOfConsoleInputEvents(IntPtr hConsoleInput, out uint lpNumberOfEvents);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool ReadConsoleInput(IntPtr hConsoleInput, out INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
@@ -84,13 +81,15 @@ public static class ClashConInV4 {
     }
 }
 '@ -ErrorAction Stop
-            $script:ConInReady = $true
-        } catch { $script:ConInReady = $false }
-    }
+    $script:ConInReady = $true
+} catch { $script:ConInReady = $false }
+
+function Select-AgentMenu {
+    param([object[]]$Agents)  # 每个元素含 key / name / enabled
     # 菜单开始时清空一次输入队列：丢弃执行本安装命令的 Enter KeyUp 等残留事件，
     # 防止菜单刚显示就误读残留（KeyUp 读不到 KeyDown 会让旧逻辑提前跳过/误触发）
     if ($script:ConInReady) {
-        try { [ClashConInV4]::FlushInput() } catch {}
+        try { [ClashConInV5]::FlushInput() } catch {}
     } elseif (-not $script:WarnedFallback) {
         Write-Host '（提示：Win32 读键不可用，菜单按键可能无响应）' -ForegroundColor DarkYellow
         $script:WarnedFallback = $true
@@ -120,7 +119,9 @@ public static class ClashConInV4 {
         Write-Host ('  ↑/↓ 移动 · 空格切换选中 · Enter 确认部署 · Esc 跳过').PadRight($width - 1) -ForegroundColor DarkGray
         $key = $null
         try {
-            if (@($script:KeyQueue).Count -gt 0) {
+            # 注意：@($null).Count=1！KeyQueue 未定义（null）时若只判 Count 会误入此
+            # 分支，$null[0] 抛"无法对 Null 数组进行索引"→ 菜单立即跳过。必须显式判 null。
+            if ($null -ne $script:KeyQueue -and $script:KeyQueue.Count -gt 0) {
                 $ki = $script:KeyQueue[0]
                 $script:KeyQueue = @($script:KeyQueue | Select-Object -Skip 1)
                 $key = [int]$ki.Key  # ConsoleKey 枚举值 == Win32 VK 码
@@ -140,7 +141,7 @@ public static class ClashConInV4 {
                         Write-Host "（等待按键 $timeoutSec 秒超时，跳过部署）" -ForegroundColor DarkYellow
                         return @()
                     }
-                    if ([ClashConInV4]::HasInput()) { $key = [ClashConInV4]::ReadKeyVk() }
+                    if ([ClashConInV5]::HasInput()) { $key = [ClashConInV5]::ReadKeyVk() }
                     else { Start-Sleep -Milliseconds 100 }
                 }
             } else {
@@ -157,7 +158,7 @@ public static class ClashConInV4 {
                 $key = [int]($Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')).Key
             }
         } catch {
-            Write-Host "（菜单读键异常：$($_.Exception.Message)）" -ForegroundColor Red
+            Write-Host "（菜单读键异常 $($_.Exception.GetType().Name) @行$($_.InvocationInfo.ScriptLineNumber)：$($_.Exception.Message)）" -ForegroundColor Red
             return @()
         }
         if ($null -eq $key) { return @() }
@@ -306,6 +307,7 @@ $depScript = Join-Path $installDir 'deploy-agents.ps1'
 # 6.5 交互选择：方向键多选菜单选择部署目标（全部列出，已检测的可选，Esc 跳过）
 Write-Host ''
 Write-Host '是否把 skill 部署到本机 agent 工具：' -ForegroundColor Cyan
+Write-Host "  （读键路径：$(if ($script:ConInReady) { 'Win32' } else { 'RawUI 降级（按键可能无效）' })）" -ForegroundColor DarkGray
 # 与 deploy-agents.ps1 保持一致的 agent 清单（菜单列出全部，未检测到的置灰不可选）
 $targets = @(
   @{ key = 'claude';    name = 'Claude Code'; dir = "$HOME\.claude" },
