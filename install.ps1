@@ -24,11 +24,48 @@ $ErrorActionPreference = 'Stop'
 # 交互多选菜单（Claude Code 问问题式）：↑/↓ 移动光标，Enter 在 agent 项上切换选中
 # （▣→▢，选中项显示青色），光标移到「开始部署」按 Enter 开始部署，Esc 跳过。
 # 菜单始终列出全部 agent；enabled=false（本机未检测到）的置灰且不可勾选。
-# 读键只用 $Host.UI.RawUI（主机层 API）——[Console] 类在 Windows Terminal
-# （ConPTY）与重定向环境下不可靠；无人按键 45 秒超时 = 跳过部署；
+# 读键：Win32 console API 优先（.NET Console 类与 RawUI.KeyAvailable 在
+# Windows Terminal/ConPTY + PS5.1 下会抛错导致菜单被误跳过；Win32 是 Windows
+# Terminal 官方兼容层）；Add-Type 不可用降级 RawUI；自动化（stdin 重定向）
+# HasInput 恒 false → 超时跳过（默认 45s，CLASH_PROXY_MENU_TIMEOUT 可缩短）。
 # 测试可用 $script:KeyQueue 注入按键流（ConsoleKeyInfo 数组）。
 function Select-AgentMenu {
     param([object[]]$Agents)  # 每个元素含 key / name / enabled
+    # 懒编译 Win32 控制台输入封装（一次会话一次；编译失败则降级 RawUI 轮询）
+    if ($null -eq $script:ConInReady) {
+        try {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ClashConIn {
+    [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetNumberOfConsoleInputEvents(IntPtr hConsoleInput, out uint lpNumberOfEvents);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool ReadConsoleInput(IntPtr hConsoleInput, out INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
+    [StructLayout(LayoutKind.Sequential)] public struct KEY_EVENT_RECORD {
+        public bool bKeyDown; public ushort wRepeatCount; public ushort wVirtualKeyCode;
+        public ushort wVirtualScanCode; public char UnicodeChar; public uint dwControlKeyState;
+    }
+    [StructLayout(LayoutKind.Sequential)] public struct INPUT_RECORD {
+        public ushort EventType; public KEY_EVENT_RECORD KeyEvent;
+    }
+    public static bool HasInput() {
+        IntPtr h = GetStdHandle(-10);
+        if (h == IntPtr.Zero || h == new IntPtr(-1)) return false;
+        uint n; return GetNumberOfConsoleInputEvents(h, out n) && n > 0;
+    }
+    public static int ReadKeyVk() {
+        IntPtr h = GetStdHandle(-10);
+        INPUT_RECORD r; uint read;
+        while (true) {
+            if (!ReadConsoleInput(h, out r, 1, out read) || read == 0) return 0;
+            if (r.EventType == 1 && r.KeyEvent.bKeyDown) return r.KeyEvent.wVirtualKeyCode;
+        }
+    }
+}
+'@ -ErrorAction Stop
+            $script:ConInReady = $true
+        } catch { $script:ConInReady = $false }
+    }
     $items = @()
     foreach ($a in $Agents) {
         $items += [pscustomobject]@{ key = $a.key; label = "[$($a.key)] $($a.name)"; checked = $a.enabled; enabled = $a.enabled }
@@ -58,32 +95,45 @@ function Select-AgentMenu {
         $key = $null
         try {
             if (@($script:KeyQueue).Count -gt 0) {
-                $key = $script:KeyQueue[0]
+                $ki = $script:KeyQueue[0]
                 $script:KeyQueue = @($script:KeyQueue | Select-Object -Skip 1)
+                $key = [int]$ki.Key  # ConsoleKey 枚举值 == Win32 VK 码
+            } elseif ($script:ConInReady) {
+                # 首选：Win32 直接读控制台输入。.NET Console 类在 Windows Terminal
+                # (ConPTY) + PS5.1 下会抛错导致菜单被误跳过；Win32 console API 是
+                # Windows Terminal 官方承诺兼容的层。自动化（stdin 重定向）下
+                # HasInput 恒 false → 超时跳过（默认 45s，可用
+                # $env:CLASH_PROXY_MENU_TIMEOUT 缩短，CI 用）
+                $timeoutSec = if ($env:CLASH_PROXY_MENU_TIMEOUT) { [int]$env:CLASH_PROXY_MENU_TIMEOUT } else { 45 }
+                $deadline = [DateTime]::Now.AddSeconds($timeoutSec)
+                while (-not [ClashConIn]::HasInput()) {
+                    if ([DateTime]::Now -gt $deadline) { return @() }
+                    Start-Sleep -Milliseconds 100
+                }
+                $key = [ClashConIn]::ReadKeyVk()
+                if ($key -eq 0) { return @() }
             } else {
-                # RawUI 轮询：自动化环境 KeyAvailable=false → 超时跳过（默认 45s，
-                # CI/测试可用 $env:CLASH_PROXY_MENU_TIMEOUT 设秒数缩短）；
-                # 交互终端（含 Windows Terminal）等用户按键（真人操作远快于 45s）
+                # 降级：RawUI 轮询（Add-Type 不可用时的传统 conhost / PS7 兜底）
                 $timeoutSec = if ($env:CLASH_PROXY_MENU_TIMEOUT) { [int]$env:CLASH_PROXY_MENU_TIMEOUT } else { 45 }
                 $deadline = [DateTime]::Now.AddSeconds($timeoutSec)
                 while (-not $Host.UI.RawUI.KeyAvailable) {
                     if ([DateTime]::Now -gt $deadline) { return @() }
                     Start-Sleep -Milliseconds 100
                 }
-                $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                $key = [int]($Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')).Key
             }
         } catch { return @() }
         if ($null -eq $key) { return @() }
-        switch ($key.Key) {
-            ([ConsoleKey]::UpArrow)   { $cur = ($cur - 1 + $items.Count) % $items.Count }
-            ([ConsoleKey]::DownArrow) { $cur = ($cur + 1) % $items.Count }
-            ([ConsoleKey]::Enter) {  # agent 项切换选中（未检测到的不可选）；「开始部署」确认返回
+        switch ($key) {  # VK 码：38=↑ 40=↓ 13=Enter 27=Esc
+            38 { $cur = ($cur - 1 + $items.Count) % $items.Count }
+            40 { $cur = ($cur + 1) % $items.Count }
+            13 {  # agent 项切换选中（未检测到的不可选）；「开始部署」确认返回
                 if ($items[$cur].key -eq '') {
                     return @($items | Where-Object { $_.key -and $_.checked -and $_.enabled } | ForEach-Object { $_.key })
                 }
                 if ($items[$cur].enabled) { $items[$cur].checked = -not $items[$cur].checked }
             }
-            ([ConsoleKey]::Escape) { return @() }  # 跳过部署
+            27 { return @() }  # 跳过部署
         }
     }
 }
