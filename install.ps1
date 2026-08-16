@@ -23,15 +23,17 @@ $ErrorActionPreference = 'Stop'
 
 # 交互多选菜单（Claude Code 问问题式）：↑/↓ 移动光标，Enter 在 agent 项上切换选中
 # （▣→▢，选中项显示青色），光标移到「开始部署」按 Enter 开始部署，Esc 跳过。
-# 非交互环境（管道/自动化）ReadKey 失败时返回空数组 = 跳过部署；
+# 菜单始终列出全部 agent；enabled=false（本机未检测到）的置灰且不可勾选。
+# 读键只用 $Host.UI.RawUI（主机层 API）——[Console] 类在 Windows Terminal
+# （ConPTY）与重定向环境下不可靠；无人按键 45 秒超时 = 跳过部署；
 # 测试可用 $script:KeyQueue 注入按键流（ConsoleKeyInfo 数组）。
 function Select-AgentMenu {
-    param([object[]]$Agents)  # 每个元素含 key / name，默认全部选中
+    param([object[]]$Agents)  # 每个元素含 key / name / enabled
     $items = @()
     foreach ($a in $Agents) {
-        $items += [pscustomobject]@{ key = $a.key; label = "[$($a.key)] $($a.name)"; checked = $true }
+        $items += [pscustomobject]@{ key = $a.key; label = "[$($a.key)] $($a.name)"; checked = $a.enabled; enabled = $a.enabled }
     }
-    $items += [pscustomobject]@{ key = ''; label = '开始部署'; checked = $true }
+    $items += [pscustomobject]@{ key = ''; label = '开始部署'; checked = $true; enabled = $true }
     $cur = 0
     $width = $Host.UI.RawUI.WindowSize.Width
     $menuTop = $Host.UI.RawUI.CursorPosition.Y
@@ -43,24 +45,28 @@ function Select-AgentMenu {
             $isConfirm = $items[$i].key -eq ''
             $prefix = if ($isConfirm) { '>' } else { ' ' }
             $mark = if ($items[$i].checked) { '▣' } else { '▢' }
-            $text = "  $prefix $mark $($items[$i].label)".PadRight($width - 1)
+            $label = $items[$i].label
+            if (-not $items[$i].enabled) { $label += '（未检测到，不可选）' }
+            $text = "  $prefix $mark $label".PadRight($width - 1)
             if ($i -eq $cur) { Write-Host $text -ForegroundColor White -BackgroundColor DarkBlue }
+            elseif (-not $items[$i].enabled) { Write-Host $text -ForegroundColor DarkGray }
             elseif ($items[$i].checked) { Write-Host $text -ForegroundColor Cyan }
             else { Write-Host $text -ForegroundColor DarkGray }
         }
         try { [Console]::SetCursorPosition(0, $menuTop + $items.Count) } catch {}
         Write-Host ('  ↑/↓ 移动 · Enter 切换选中 · 「开始部署」回车确认 · Esc 跳过').PadRight($width - 1) -ForegroundColor DarkGray
-        # 读键：测试用 $script:KeyQueue 注入；真实交互读控制台。
-        # 非交互防卡死：stdin 被重定向（管道/自动化）时 KeyAvailable 立即抛错 → 跳过；
-        # 交互终端无人按键时 45 秒超时 → 跳过（真人操作一般远快于此）。
         $key = $null
         try {
             if (@($script:KeyQueue).Count -gt 0) {
                 $key = $script:KeyQueue[0]
                 $script:KeyQueue = @($script:KeyQueue | Select-Object -Skip 1)
             } else {
-                $deadline = [DateTime]::Now.AddSeconds(45)
-                while (-not [Console]::KeyAvailable) {
+                # RawUI 轮询：自动化环境 KeyAvailable=false → 超时跳过（默认 45s，
+                # CI/测试可用 $env:CLASH_PROXY_MENU_TIMEOUT 设秒数缩短）；
+                # 交互终端（含 Windows Terminal）等用户按键（真人操作远快于 45s）
+                $timeoutSec = if ($env:CLASH_PROXY_MENU_TIMEOUT) { [int]$env:CLASH_PROXY_MENU_TIMEOUT } else { 45 }
+                $deadline = [DateTime]::Now.AddSeconds($timeoutSec)
+                while (-not $Host.UI.RawUI.KeyAvailable) {
                     if ([DateTime]::Now -gt $deadline) { return @() }
                     Start-Sleep -Milliseconds 100
                 }
@@ -71,11 +77,11 @@ function Select-AgentMenu {
         switch ($key.Key) {
             ([ConsoleKey]::UpArrow)   { $cur = ($cur - 1 + $items.Count) % $items.Count }
             ([ConsoleKey]::DownArrow) { $cur = ($cur + 1) % $items.Count }
-            ([ConsoleKey]::Enter) {  # agent 项切换选中；「开始部署」确认返回
+            ([ConsoleKey]::Enter) {  # agent 项切换选中（未检测到的不可选）；「开始部署」确认返回
                 if ($items[$cur].key -eq '') {
-                    return @($items | Where-Object { $_.key -and $_.checked } | ForEach-Object { $_.key })
+                    return @($items | Where-Object { $_.key -and $_.checked -and $_.enabled } | ForEach-Object { $_.key })
                 }
-                $items[$cur].checked = -not $items[$cur].checked
+                if ($items[$cur].enabled) { $items[$cur].checked = -not $items[$cur].checked }
             }
             ([ConsoleKey]::Escape) { return @() }  # 跳过部署
         }
@@ -212,10 +218,10 @@ if (($userPath -split ';') -notcontains $installDir) {
 # 6. deploy-agents.ps1 已在第 3 步随 files 清单下载并校验
 $depScript = Join-Path $installDir 'deploy-agents.ps1'
 
-# 6.5 交互选择：方向键多选菜单选择部署目标（默认全选，Enter 切换，Esc 跳过）
+# 6.5 交互选择：方向键多选菜单选择部署目标（全部列出，已检测的可选，Esc 跳过）
 Write-Host ''
 Write-Host '是否把 skill 部署到本机 agent 工具：' -ForegroundColor Cyan
-# 与 deploy-agents.ps1 保持一致的 agent 清单（菜单只显示已检测到的）
+# 与 deploy-agents.ps1 保持一致的 agent 清单（菜单列出全部，未检测到的置灰不可选）
 $targets = @(
   @{ key = 'claude';    name = 'Claude Code'; dir = "$HOME\.claude" },
   @{ key = 'gemini';    name = 'Gemini';      dir = "$HOME\.gemini" },
@@ -226,23 +232,22 @@ $targets = @(
   @{ key = 'grok';      name = 'Grok';        dir = "$HOME\.grok" },
   @{ key = 'agents';    name = '共享池 .agents'; dir = "$HOME\.agents" }
 )
-$detected = @($targets | Where-Object { Test-Path $_.dir })
-$notFound = @($targets | Where-Object { -not (Test-Path $_.dir) })
-if ($detected.Count -eq 0) {
-    Write-Host '未检测到任何已安装的 agent 工具，跳过 skill 部署。' -ForegroundColor Yellow
-    Write-Host '（装好 agent 后重跑本命令即可检测并选择部署）' -ForegroundColor DarkGray
-} else {
-    $selected = Select-AgentMenu $detected
-    if ($selected.Count -gt 0) {
-        Write-Host ''
-        Write-Host "已选择 $($selected.Count) 个：$($selected -join '、')" -ForegroundColor Green
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $depScript -Agent ($selected -join ',')
-    } else {
-        Write-Host ''
-        Write-Host '未选择任何 agent，跳过 skill 部署。' -ForegroundColor Yellow
-        Write-Host "（之后想装：powershell -ExecutionPolicy Bypass -File `"$depScript`"）" -ForegroundColor DarkGray
-    }
+# 菜单列出全部 agent（已检测到的可选、默认选中；未检测到的置灰「不可选」）
+$menuItems = @()
+foreach ($t in $targets) {
+    $menuItems += [pscustomobject]@{ key = $t.key; name = $t.name; enabled = (Test-Path $t.dir) }
 }
+$selected = Select-AgentMenu $menuItems
+if ($selected.Count -gt 0) {
+    Write-Host ''
+    Write-Host "已选择 $($selected.Count) 个：$($selected -join '、')" -ForegroundColor Green
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $depScript -Agent ($selected -join ',')
+} else {
+    Write-Host ''
+    Write-Host '未选择任何 agent，跳过 skill 部署。' -ForegroundColor Yellow
+    Write-Host "（之后想装：powershell -ExecutionPolicy Bypass -File `"$depScript`"）" -ForegroundColor DarkGray
+}
+$notFound = @($targets | Where-Object { -not (Test-Path $_.dir) })
 if ($notFound.Count) {
     Write-Host "未检测到的 agent（装好后重跑本命令即可部署）：$((($notFound | ForEach-Object { $_.name }) -join '、'))" -ForegroundColor DarkGray
 }
