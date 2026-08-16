@@ -7,7 +7,10 @@
   效果：
     - 把 clash-proxy.mjs + clash-proxy.cmd 安装到 %LOCALAPPDATA%\Programs\clash-proxy
     - 把安装目录加入「用户 PATH」，当前与未来终端都能直接 `clash-proxy`
-    - 幂等：重复运行只覆盖更新，不产生重复 PATH 条目
+    - 幂等：重复运行 = 更新命令。查 GitHub API 最新 commit 与每个文件的
+      git blob SHA-1，与本地对比：只有变化的文件才重新下载（下载后哈希校验，
+      CDN 缓存延迟自动重试），全部一致则提示「已是最新」并跳过下载
+    - 删除 %LOCALAPPDATA%\Programs\clash-proxy\.version 再重跑 = 强制重装
     - 安装完成后方向键多选菜单选择部署 skill 到哪些 agent 工具：默认全选，
       ↑/↓ 移动、Enter 切换选中（▣→▢）、移到「开始部署」回车确认、Esc 跳过；
       选好后自动部署 clash-proxy + clash-proxy-fix
@@ -80,7 +83,63 @@ function Select-AgentMenu {
 }
 
 $repoBase = 'https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main'
+$repoRaw  = 'https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli'
+$apiBase  = 'https://api.github.com/repos/likangdi-code/clash-verge-url-proxy-cli'
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\clash-proxy'
+$versionFile = Join-Path $installDir '.version'
+
+# 需要下载并哈希校验的文件（git 树路径 → 安装目录内路径）
+$files = @(
+  @{ path = 'clash-proxy.mjs';    dest = 'clash-proxy.mjs' },
+  @{ path = 'downloader.mjs';     dest = 'downloader.mjs' },
+  @{ path = 'vendor/js-yaml.mjs'; dest = 'vendor\js-yaml.mjs' },
+  @{ path = 'deploy-agents.ps1';  dest = 'deploy-agents.ps1' }
+)
+
+# 查最新 commit SHA（= 版本号）。API 不可用时返回 $null（降级：跳过版本判定与校验）
+function Get-GitLatestSha {
+    try {
+        $r = Invoke-RestMethod -Uri "$apiBase/commits/main" -Headers @{ 'User-Agent' = 'clash-proxy-install' } -UseBasicParsing
+        return $r.sha
+    } catch { return $null }
+}
+
+# 一次拿全仓文件的 git blob SHA-1 表（path -> sha）。API 不可用时返回 $null
+function Get-GitFileShas {
+    param([string]$Ref)
+    try {
+        # 注意：必须写成 ${Ref}——PowerShell 变量名可含 '?'，$Ref?recursive 会把 ?recursive 吞进变量名
+        $r = Invoke-RestMethod -Uri "$apiBase/git/trees/${Ref}?recursive=1" -Headers @{ 'User-Agent' = 'clash-proxy-install' } -UseBasicParsing
+        $map = @{}
+        foreach ($t in $r.tree) { if ($t.type -eq 'blob') { $map[$t.path] = $t.sha } }
+        return $map
+    } catch { return $null }
+}
+
+# 计算文件的 git blob SHA-1（"blob <字节数>\0" + 内容），与 GitHub 树里的一致可比对
+function Get-GitBlobSha([string]$Path) {
+    if (-not (Test-Path $Path)) { return $null }
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $header = [Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")
+    $all = New-Object byte[] ($header.Length + $bytes.Length)
+    [Array]::Copy($header, 0, $all, 0, $header.Length)
+    [Array]::Copy($bytes, 0, $all, $header.Length, $bytes.Length)
+    $hash = [Security.Cryptography.SHA1]::Create().ComputeHash($all)
+    return (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# 下载 + 哈希校验 + 重试（CDN 缓存延迟/网络抖动时自动重试；校验仍失败返回 $false）
+function Invoke-DownloadChecked {
+    param([string]$Url, [string]$Dest, [string]$ExpectedSha, [int]$Retries = 3)
+    for ($i = 1; $i -le $Retries; $i++) {
+        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+        $actual = Get-GitBlobSha $Dest
+        if ($actual -eq $ExpectedSha) { return $true }
+        Write-Host "    哈希不一致（预期 $($ExpectedSha.Substring(0, 8))… 实际 $($actual.Substring(0, 8))…），$($Retries - $i) 次后重试…" -ForegroundColor Yellow
+        Start-Sleep -Seconds 5
+    }
+    return $false
+}
 
 # 1. 前置检查：需要 Node.js（clash-proxy 是零依赖 Node 脚本）
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -91,13 +150,47 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 # 2. 创建安装目录
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-# 3. 下载脚本主体 + vendored js-yaml + 独立下载引擎（add 解析 YAML / dl 多线程下载用）
-Write-Host "下载 clash-proxy.mjs -> $installDir" -ForegroundColor Cyan
-$mjs = Join-Path $installDir 'clash-proxy.mjs'
-Invoke-WebRequest -Uri "$repoBase/clash-proxy.mjs" -OutFile $mjs -UseBasicParsing
-Invoke-WebRequest -Uri "$repoBase/downloader.mjs" -OutFile (Join-Path $installDir 'downloader.mjs') -UseBasicParsing
+# 3. 版本判定 + 逐文件增量下载 + 哈希校验
+Write-Host '检查更新…' -ForegroundColor DarkGray
+$latestSha = Get-GitLatestSha
+$treeShas = if ($latestSha) { Get-GitFileShas $latestSha } else { $null }
+$lastSha = if (Test-Path $versionFile) { (Get-Content $versionFile -Raw -ErrorAction SilentlyContinue).Trim() } else { '' }
+if ($latestSha -and $treeShas) {
+    if ($lastSha -eq $latestSha) {
+        Write-Host "已是最新版本（commit $($latestSha.Substring(0, 8))），工具无需更新。" -ForegroundColor Green
+    } else {
+        Write-Host ("发现新版本：{0} → {1}" -f $(if ($lastSha) { $lastSha.Substring(0, 8) } else { '全新安装' }), $latestSha.Substring(0, 8)) -ForegroundColor Cyan
+    }
+} else {
+    Write-Host '⚠ 无法访问 GitHub API（网络/代理问题），跳过版本检查与哈希校验，直接安装。' -ForegroundColor Yellow
+}
 New-Item -ItemType Directory -Force -Path (Join-Path $installDir 'vendor') | Out-Null
-Invoke-WebRequest -Uri "$repoBase/vendor/js-yaml.mjs" -OutFile (Join-Path $installDir 'vendor\js-yaml.mjs') -UseBasicParsing
+$downloaded = @(); $skipped = @()
+foreach ($f in $files) {
+    $dest = Join-Path $installDir $f.dest
+    $expected = if ($treeShas) { $treeShas[$f.path] } else { $null }
+    if ($expected -and (Test-Path $dest) -and ((Get-GitBlobSha $dest) -eq $expected)) {
+        Write-Host "  [=] $($f.path) 未变化，跳过" -ForegroundColor DarkGray
+        $skipped += $f.path
+        continue
+    }
+    Write-Host "  [↓] 下载 $($f.path)" -ForegroundColor Cyan
+    # 用 commit SHA 路径下载（不可变对象，绕开 main 分支 CDN 渐进缓存）；API 不可用时退回 main 路径
+    $url = if ($latestSha) { "$repoRaw/$latestSha/$($f.path)" } else { "$repoBase/$($f.path)" }
+    $ok = if ($expected) { Invoke-DownloadChecked $url $dest $expected } else { Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing; $true }
+    if (-not $ok) {
+        Write-Host "  ✗ $($f.path) 下载后哈希校验失败（GitHub CDN 缓存延迟），请稍后重跑本命令。" -ForegroundColor Red
+        exit 1
+    }
+    $downloaded += $f.path
+}
+if ($latestSha) { Set-Content -Path $versionFile -Value $latestSha -Encoding ASCII }
+if ($downloaded.Count -gt 0) {
+    Write-Host "已更新 $($downloaded.Count) 个文件：$($downloaded -join '、')" -ForegroundColor Green
+}
+if ($skipped.Count -gt 0) {
+    Write-Host "跳过 $($skipped.Count) 个未变化文件：$($skipped -join '、')" -ForegroundColor DarkGray
+}
 
 # 4. 生成命令包装 clash-proxy.cmd + clash-dl.cmd（均纯 ASCII，避免 cmd 代码页解析乱码）
 $cmdContent = "@echo off`r`nrem clash-proxy command wrapper`r`nnode `"%~dp0clash-proxy.mjs`" %*`r`n"
@@ -116,10 +209,8 @@ if (($userPath -split ';') -notcontains $installDir) {
     Write-Host "PATH 已包含安装目录，跳过" -ForegroundColor DarkGray
 }
 
-# 6. 下载 deploy-agents.ps1 到安装目录（skill 部署脚本，覆盖更新）
+# 6. deploy-agents.ps1 已在第 3 步随 files 清单下载并校验
 $depScript = Join-Path $installDir 'deploy-agents.ps1'
-Invoke-WebRequest -Uri "$repoBase/deploy-agents.ps1" -OutFile $depScript -UseBasicParsing
-Write-Host "已更新 skill 部署脚本 -> $depScript" -ForegroundColor DarkGray
 
 # 6.5 交互选择：方向键多选菜单选择部署目标（默认全选，Enter 切换，Esc 跳过）
 Write-Host ''

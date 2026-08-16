@@ -28,6 +28,8 @@ $ErrorActionPreference = 'Continue'
 
 # 1. 确定要部署的 skills 清单（默认两个；显式传了 SkillUrl/SourcePath 则只部署这一个）
 $repoBase = 'https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main'
+$repoRaw  = 'https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli'
+$apiBase  = 'https://api.github.com/repos/likangdi-code/clash-verge-url-proxy-cli'
 if ($SkillUrl -or $SourcePath) {
   $skills = @(@{ name = $SkillName; url = $SkillUrl; src = $SourcePath })
 } else {
@@ -35,6 +37,40 @@ if ($SkillUrl -or $SourcePath) {
     @{ name = 'clash-proxy';     url = "$repoBase/skills/clash-proxy/SKILL.md";     src = '' },
     @{ name = 'clash-proxy-fix'; url = "$repoBase/skills/clash-proxy-fix/SKILL.md"; src = '' }
   )
+}
+
+# 版本/校验：查最新 commit 与 SKILL.md 的 git blob SHA-1，下载后比对（API 不可用时降级）
+function Get-GitLatestSha {
+  try { return (Invoke-RestMethod -Uri "$apiBase/commits/main" -Headers @{ 'User-Agent' = 'clash-proxy-install' } -UseBasicParsing).sha } catch { return $null }
+}
+function Get-GitFileShas {
+  param([string]$Ref)
+  try {
+    # 注意：必须写成 ${Ref}——PowerShell 变量名可含 '?'，$Ref?recursive 会把 ?recursive 吞进变量名
+    $r = Invoke-RestMethod -Uri "$apiBase/git/trees/${Ref}?recursive=1" -Headers @{ 'User-Agent' = 'clash-proxy-install' } -UseBasicParsing
+    $m = @{}; foreach ($t in $r.tree) { if ($t.type -eq 'blob') { $m[$t.path] = $t.sha } }
+    return $m
+  } catch { return $null }
+}
+function Get-GitBlobSha([string]$Path) {
+  if (-not (Test-Path $Path)) { return $null }
+  $bytes = [IO.File]::ReadAllBytes($Path)
+  $header = [Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")
+  $all = New-Object byte[] ($header.Length + $bytes.Length)
+  [Array]::Copy($header, 0, $all, 0, $header.Length)
+  [Array]::Copy($bytes, 0, $all, $header.Length, $bytes.Length)
+  return (( [Security.Cryptography.SHA1]::Create().ComputeHash($all) | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+function Invoke-DownloadChecked {
+  param([string]$Url, [string]$Dest, [string]$ExpectedSha, [int]$Retries = 3)
+  for ($i = 1; $i -le $Retries; $i++) {
+    Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+    $actual = Get-GitBlobSha $Dest
+    if ($actual -eq $ExpectedSha) { return $true }
+    Write-Host "    哈希不一致（预期 $($ExpectedSha.Substring(0, 8))… 实际 $($actual.Substring(0, 8))…），$($Retries - $i) 次后重试…" -ForegroundColor Yellow
+    Start-Sleep -Seconds 5
+  }
+  return $false
 }
 
 # 2. 各 agent 工具： key -> (检测目录, skills 目录, 显示名)
@@ -65,6 +101,13 @@ $scope = if ($Agent) { "指定工具 [$Agent]" } else { '本机所有 agent 工�
 $skillList = ($skills | ForEach-Object { $_.name }) -join ' + '
 Write-Host "部署 Skill [$skillList] 到 $scope：" -ForegroundColor Cyan
 
+# 2.5 查最新 commit 与 SKILL.md 哈希（API 不可用时降级：跳过校验直接下载）
+$latestSha = Get-GitLatestSha
+$treeShas = if ($latestSha) { Get-GitFileShas $latestSha } else { $null }
+if (-not $latestSha) {
+  Write-Host '⚠ 无法访问 GitHub API，跳过哈希校验（仍正常下载部署）。' -ForegroundColor Yellow
+}
+
 $installed = @()   # { skill, name, dest }
 $missing = @()     # { name, key, skillsDir } 工具未检测到
 foreach ($t in $targets) {
@@ -78,14 +121,28 @@ foreach ($t in $targets) {
         if (-not (Test-Path $s.src)) { Write-Error "本地 SKILL.md 不存在: $($s.src)"; exit 1 }
         Copy-Item $s.src $skillFile -Force
       } else {
-        # 每次部署都重新拉取（SKILL.md 只有几 KB），避免 temp 缓存里是旧版
-        Remove-Item $skillFile -Force -ErrorAction SilentlyContinue
-        try {
-          Invoke-WebRequest -Uri $s.url -OutFile $skillFile -UseBasicParsing
-          Write-Host "已下载 SKILL.md: $($s.url)" -ForegroundColor DarkGray
-        } catch {
-          Write-Error "下载 SKILL.md 失败: $($_.Exception.Message)"
-          exit 1
+        # 下载 SKILL.md：temp 缓存与最新版本哈希一致则复用，否则重新下载
+        # 下载后用 git blob SHA-1 校验（与 GitHub 官方树比对，重试兜底 CDN 缓存延迟）
+        $expected = if ($treeShas) { $treeShas["skills/$($s.name)/SKILL.md"] } else { $null }
+        if ($expected -and (Test-Path $skillFile) -and ((Get-GitBlobSha $skillFile) -eq $expected)) {
+          Write-Host "已是最新 SKILL.md（$($s.name)），跳过下载" -ForegroundColor DarkGray
+        } else {
+          # 用 commit SHA 路径下载（不可变对象，绕开 main 分支 CDN 渐进缓存）
+          $url = if ($latestSha) { "$repoRaw/$latestSha/skills/$($s.name)/SKILL.md" } else { $s.url }
+          try {
+            if ($expected) {
+              if (-not (Invoke-DownloadChecked $url $skillFile $expected)) {
+                Write-Error "下载 $($s.name) SKILL.md 哈希校验失败（GitHub CDN 缓存延迟），请稍后重试。"
+                exit 1
+              }
+            } else {
+              Invoke-WebRequest -Uri $url -OutFile $skillFile -UseBasicParsing
+            }
+            Write-Host "已下载 SKILL.md: $url" -ForegroundColor DarkGray
+          } catch {
+            Write-Error "下载 SKILL.md 失败: $($_.Exception.Message)"
+            exit 1
+          }
         }
       }
       $dest = Join-Path $t.skills $s.name
