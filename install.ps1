@@ -61,10 +61,22 @@ public static class ClashConIn {
             if (r.EventType == 1 && r.KeyEvent.bKeyDown) return r.KeyEvent.wVirtualKeyCode;
         }
     }
+    public static void FlushInput() {
+        // 丢弃队列中所有残留事件（如执行命令的 Enter KeyUp、鼠标/焦点事件），
+        // 防止菜单刚显示就被残留事件误触发/读到空队列提前退出
+        IntPtr h = GetStdHandle(-10);
+        INPUT_RECORD r; uint read;
+        while (ReadConsoleInput(h, out r, 1, out read) && read > 0) { }
+    }
 }
 '@ -ErrorAction Stop
             $script:ConInReady = $true
         } catch { $script:ConInReady = $false }
+    }
+    # 菜单开始时清空一次输入队列：丢弃执行本安装命令的 Enter KeyUp 等残留事件，
+    # 防止菜单刚显示就误读残留（KeyUp 读不到 KeyDown 会让旧逻辑提前跳过/误触发）
+    if ($script:ConInReady) {
+        try { [ClashConIn]::FlushInput() } catch {}
     }
     $items = @()
     foreach ($a in $Agents) {
@@ -103,15 +115,17 @@ public static class ClashConIn {
                 # (ConPTY) + PS5.1 下会抛错导致菜单被误跳过；Win32 console API 是
                 # Windows Terminal 官方承诺兼容的层。自动化（stdin 重定向）下
                 # HasInput 恒 false → 超时跳过（默认 45s，可用
-                # $env:CLASH_PROXY_MENU_TIMEOUT 缩短，CI 用）
+                # $env:CLASH_PROXY_MENU_TIMEOUT 缩短，CI 用）。
+                # 残留事件（执行 irm|iex 命令的 Enter KeyUp 等）在菜单开始时已清空；
+                # ReadKeyVk 读空队列（只剩 KeyUp 时）返回 0 → 继续轮询而非跳过。
                 $timeoutSec = if ($env:CLASH_PROXY_MENU_TIMEOUT) { [int]$env:CLASH_PROXY_MENU_TIMEOUT } else { 45 }
                 $deadline = [DateTime]::Now.AddSeconds($timeoutSec)
-                while (-not [ClashConIn]::HasInput()) {
+                $key = 0
+                while ($key -eq 0) {
                     if ([DateTime]::Now -gt $deadline) { return @() }
-                    Start-Sleep -Milliseconds 100
+                    if ([ClashConIn]::HasInput()) { $key = [ClashConIn]::ReadKeyVk() }
+                    else { Start-Sleep -Milliseconds 100 }
                 }
-                $key = [ClashConIn]::ReadKeyVk()
-                if ($key -eq 0) { return @() }
             } else {
                 # 降级：RawUI 轮询（Add-Type 不可用时的传统 conhost / PS7 兜底）
                 $timeoutSec = if ($env:CLASH_PROXY_MENU_TIMEOUT) { [int]$env:CLASH_PROXY_MENU_TIMEOUT } else { 45 }
