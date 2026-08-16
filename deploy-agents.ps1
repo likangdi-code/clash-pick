@@ -12,7 +12,7 @@
     powershell -ExecutionPolicy Bypass -File deploy-agents.ps1
         # 部署两个 skill 到本机【所有】已检测到的 agent 工具（默认从 GitHub raw 拉取）
     powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -Agent claude
-        # 只装到【指定】工具（供某个 agent 自己给自己装 skill）
+        # 只装到【指定】工具（可逗号分隔多个：-Agent "claude,codex"；供某个 agent 自己给自己装 skill）
     powershell -ExecutionPolicy Bypass -File deploy-agents.ps1 -SourcePath .\skills\clash-proxy\SKILL.md -SkillName clash-proxy
         # 用本地 SKILL.md 部署单个自定义 skill（离线 / 开发时）
 
@@ -49,13 +49,15 @@ $targets = @(
   @{ key = 'agents';    name = '共享池 .agents'; dir = "$HOME\.agents";         skills = "$HOME\.agents\skills" }
 )
 
-# 过滤：-Agent 指定了则只处理该工具
+# 过滤：-Agent 指定了则只处理该工具（支持逗号分隔多值，如 "claude,codex"）
 if ($Agent) {
-  $targets = $targets | Where-Object { $_.key -eq $Agent }
-  if (-not $targets) {
-    Write-Error "未知工具: $Agent。可用：claude / gemini / codex / opencode / hermes / openclaw / grok / agents"
+  $agentKeys = $Agent -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+  $unknown = $agentKeys | Where-Object { $_ -notin $targets.key }
+  if ($unknown) {
+    Write-Error "未知工具: $($unknown -join ',')。可用：claude / gemini / codex / opencode / hermes / openclaw / grok / agents"
     exit 1
   }
+  $targets = $targets | Where-Object { $_.key -in $agentKeys }
 }
 
 Write-Host ''

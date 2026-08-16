@@ -1,5 +1,5 @@
 <#
-  install.ps1 — clash-proxy 工具一键安装（只装工具本体，不装 skill）
+  install.ps1 — clash-proxy 工具一键安装（兼作更新命令，重跑即更新工具 + skill）
 
   用法（PowerShell 终端粘贴一行即可）：
     irm https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main/install.ps1 | iex
@@ -8,14 +8,19 @@
     - 把 clash-proxy.mjs + clash-proxy.cmd 安装到 %LOCALAPPDATA%\Programs\clash-proxy
     - 把安装目录加入「用户 PATH」，当前与未来终端都能直接 `clash-proxy`
     - 幂等：重复运行只覆盖更新，不产生重复 PATH 条目
+    - 安装完成后交互式选择是否部署 skill：默认全选已检测到的 agent 工具，
+      逐个回车保留、输入 n 取消；选好后自动部署 clash-proxy + clash-proxy-fix
 
-  ⚠️ 本脚本**只安装工具**，不装 skill。
-  skill（让 agent 自主调用 clash-proxy）由各 agent 工具单独部署：
-    - 全部 agent 一键部署： powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\deploy-agents.ps1"
-    - 只装当前 agent（如 Claude Code）： powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\deploy-agents.ps1" -Agent claude
-  install.ps1 会把 deploy-agents.ps1 一并下载到安装目录（备用，不执行）。
+  skill 也可随时单独部署（不装工具）：
+    powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\deploy-agents.ps1"
+        # 部署到全部 agent；或 -Agent claude 只装当前（可逗号分隔多个）
 #>
 $ErrorActionPreference = 'Stop'
+
+# 交互输入：非交互环境（管道/自动化）读到 EOF 时返回 $null，按「默认回车」处理
+function Read-Interactive([string]$Prompt) {
+    try { return Read-Host $Prompt } catch { return $null }
+}
 
 $repoBase = 'https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main'
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\clash-proxy'
@@ -54,28 +59,63 @@ if (($userPath -split ';') -notcontains $installDir) {
     Write-Host "PATH 已包含安装目录，跳过" -ForegroundColor DarkGray
 }
 
-# 6. 下载 deploy-agents.ps1 到安装目录（skill 部署脚本，备用不执行）
+# 6. 下载 deploy-agents.ps1 到安装目录（skill 部署脚本，覆盖更新）
 $depScript = Join-Path $installDir 'deploy-agents.ps1'
-if (-not (Test-Path $depScript)) {
-    Invoke-WebRequest -Uri "$repoBase/deploy-agents.ps1" -OutFile $depScript -UseBasicParsing
-    Write-Host "已下载 skill 部署脚本 -> $depScript（未执行）" -ForegroundColor DarkGray
-} else {
-    Write-Host "skill 部署脚本已存在，跳过下载" -ForegroundColor DarkGray
+Invoke-WebRequest -Uri "$repoBase/deploy-agents.ps1" -OutFile $depScript -UseBasicParsing
+Write-Host "已更新 skill 部署脚本 -> $depScript" -ForegroundColor DarkGray
+
+# 6.5 交互选择：把 skill 部署到哪些 agent（默认全选，回车保留 / 输入 n 取消）
+Write-Host ''
+$deployAns = Read-Interactive '是否把 skill 部署到本机 agent 工具？(回车=选择部署 / n=跳过)'
+if ($null -eq $deployAns -or $deployAns -notmatch '^[nN]') {
+    # 与 deploy-agents.ps1 保持一致的 agent 清单（只对已检测到的询问）
+    $targets = @(
+      @{ key = 'claude';    name = 'Claude Code'; dir = "$HOME\.claude" },
+      @{ key = 'gemini';    name = 'Gemini';      dir = "$HOME\.gemini" },
+      @{ key = 'codex';     name = 'Codex';       dir = "$HOME\.codex" },
+      @{ key = 'opencode';  name = 'OpenCode';    dir = "$HOME\.config\opencode" },
+      @{ key = 'hermes';    name = 'Hermes';      dir = "$HOME\.hermes" },
+      @{ key = 'openclaw';  name = 'OpenClaw';    dir = "$HOME\.openclaw" },
+      @{ key = 'grok';      name = 'Grok';        dir = "$HOME\.grok" },
+      @{ key = 'agents';    name = '共享池 .agents'; dir = "$HOME\.agents" }
+    )
+    $detected = @($targets | Where-Object { Test-Path $_.dir })
+    $notFound = @($targets | Where-Object { -not (Test-Path $_.dir) })
+    if ($detected.Count -eq 0) {
+        Write-Host '未检测到任何已安装的 agent 工具，跳过 skill 部署。' -ForegroundColor Yellow
+        Write-Host '（装好 agent 后重跑本命令即可检测并选择部署）' -ForegroundColor DarkGray
+    } else {
+        Write-Host '选择要安装 skill 的 agent（回车=保留，输入 n=取消；默认全选）：' -ForegroundColor Cyan
+        $selected = @()
+        foreach ($t in $detected) {
+            $ans = Read-Interactive "  [$($t.key)] $($t.name)"
+            if ($null -eq $ans -or $ans -notmatch '^[nN]') { $selected += $t.key }
+        }
+        if ($selected.Count -gt 0) {
+            Write-Host "已选择 $($selected.Count) 个：$($selected -join '、')" -ForegroundColor Green
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $depScript -Agent ($selected -join ',')
+        } else {
+            Write-Host '未选择任何 agent，跳过 skill 部署。' -ForegroundColor Yellow
+            Write-Host "（之后想装：powershell -ExecutionPolicy Bypass -File `"$depScript`"）" -ForegroundColor DarkGray
+        }
+    }
+    if ($notFound.Count) {
+        Write-Host "未检测到的 agent（装好后重跑本命令即可部署）：$((($notFound | ForEach-Object { $_.name }) -join '、'))" -ForegroundColor DarkGray
+    }
 }
 
 # 7. 立即在当前进程生效并自检
 $env:Path = $userPath + ';' + $installDir + ';' + $env:Path
 Write-Host ''
-Write-Host '✓ clash-proxy 工具安装完成（未安装 skill）。' -ForegroundColor Green
+Write-Host '✓ clash-proxy 工具安装完成。' -ForegroundColor Green
 Write-Host '  新开终端（或刷新 PATH）后可直接：'
 Write-Host '    clash-proxy list'
 Write-Host '    clash-proxy pick "https://example.com/big-file.zip"'
 Write-Host '    clash-dl "https://example.com/big-file.zip"   （独立多线程下载）'
 Write-Host ''
-Write-Host '▶ 部署 skill 到本机【所有】agent 工具：' -ForegroundColor Cyan
-Write-Host "    powershell -ExecutionPolicy Bypass -File `"$installDir\deploy-agents.ps1`""
-Write-Host '  只装到【当前】agent（如 Claude Code / Gemini / Codex ...）：' -ForegroundColor Cyan
-Write-Host "    powershell -ExecutionPolicy Bypass -File `"$installDir\deploy-agents.ps1`" -Agent claude"
-Write-Host '  可用的 -Agent 值：claude / gemini / codex / opencode / hermes / openclaw / grok / agents' -ForegroundColor DarkGray
+Write-Host '  再次运行本安装命令 = 更新工具 + 重新选择 skill 部署。' -ForegroundColor DarkGray
+Write-Host '  skill 也可随时单独部署/补装：' -ForegroundColor DarkGray
+Write-Host "    powershell -ExecutionPolicy Bypass -File `"$installDir\deploy-agents.ps1`"   （全部 agent）" -ForegroundColor DarkGray
+Write-Host "    powershell -ExecutionPolicy Bypass -File `"$installDir\deploy-agents.ps1`" -Agent claude,codex" -ForegroundColor DarkGray
 Write-Host '  skill 文件也可手动下载：' -ForegroundColor DarkGray
 Write-Host "    $repoBase/skills/clash-proxy/SKILL.md" -ForegroundColor DarkGray
