@@ -77,7 +77,11 @@ irm https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/ma
 curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy-cli/main/install.sh | sh
 ```
 
-安装后新开终端即可用 `clash-proxy`。需要 Node.js（≥18）。本脚本**只装工具、不装 skill**。
+安装后新开终端即可用 `clash-proxy`。需要 Node.js（≥18）。
+
+**Windows 安装流程**：装完工具后**交互式询问**是否把 skill 部署到本机 agent 工具（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `.agents`）——默认全选已检测到的 agent，可逐个输入 `n` 取消，选好后自动部署 `clash-proxy` + `clash-proxy-fix` 两个 skill。
+
+**本命令兼作更新命令**：再次运行即覆盖更新工具与 skill（幂等，不产生重复 PATH 条目）；交互选择会重新询问，随时可调整部署目标。
 
 ### 平台支持
 
