@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/likangdi-code/clash-verge-url-proxy
 
 安装后新开终端即可用 `clash-proxy`。需要 Node.js（≥18）。
 
-**Windows 安装流程**：装完工具后弹出**方向键多选菜单**选择把 skill 部署到哪些本机 agent 工具——菜单**始终列出全部 8 个**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `.agents`），本机已检测到的默认选中（`▣` 青色，`Enter` 可切换），未检测到的置灰并标注「不可选」：`↑/↓` 移动光标、移到「开始部署」回车确认、`Esc` 跳过，选好后自动部署 `clash-proxy` + `clash-proxy-fix` 两个 skill。
+**Windows 安装流程**：装完工具后弹出**方向键多选菜单**选择把 skill 部署到哪些本机 agent 工具——菜单**始终列出全部 8 个**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `.agents`），本机已检测到的默认选中（`▣` 青色），未检测到的置灰并标注「不可选」：`↑/↓` 移动光标、`空格` 切换选中（`▣`→`▢`）、`Enter` 任意位置直接确认部署、`Esc` 跳过，选好后自动部署 `clash-proxy` + `clash-proxy-fix` 两个 skill。
 
 **本命令兼作更新命令**：再次运行即更新工具与 skill（幂等，不产生重复 PATH 条目）。更新前先查 GitHub API 的最新 commit（`%LOCALAPPDATA%\Programs\clash-proxy\.version` 记录上次版本）并对每个文件做 **git blob SHA-1 哈希比对**：只有变化的文件才重新下载（下载后再校验哈希，CDN 缓存延迟自动重试），全部一致则提示「已是最新」直接跳过；删除 `.version` 再重跑 = 强制重装。GitHub API 不可用时自动降级为直接覆盖下载（不校验、不卡住）。交互选择会重新询问，随时可调整部署目标。
 

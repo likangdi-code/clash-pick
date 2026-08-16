@@ -12,7 +12,7 @@
       CDN 缓存延迟自动重试），全部一致则提示「已是最新」并跳过下载
     - 删除 %LOCALAPPDATA%\Programs\clash-proxy\.version 再重跑 = 强制重装
     - 安装完成后方向键多选菜单选择部署 skill 到哪些 agent 工具：默认全选，
-      ↑/↓ 移动、Enter 切换选中（▣→▢）、移到「开始部署」回车确认、Esc 跳过；
+      ↑/↓ 移动、空格切换选中（▣→▢）、Enter 任意位置直接确认部署、Esc 跳过；
       选好后自动部署 clash-proxy + clash-proxy-fix
 
   skill 也可随时单独部署（不装工具）：
@@ -21,8 +21,8 @@
 #>
 $ErrorActionPreference = 'Stop'
 
-# 交互多选菜单（Claude Code 问问题式）：↑/↓ 移动光标，Enter 在 agent 项上切换选中
-# （▣→▢，选中项显示青色），光标移到「开始部署」按 Enter 开始部署，Esc 跳过。
+# 交互多选菜单（Claude Code 问问题式）：↑/↓ 移动光标，空格切换选中（▣→▢，
+# 选中项显示青色），Enter 任意位置直接确认部署（默认全选），Esc 跳过。
 # 菜单始终列出全部 agent；enabled=false（本机未检测到）的置灰且不可勾选。
 # 读键：Win32 console API 优先（.NET Console 类与 RawUI.KeyAvailable 在
 # Windows Terminal/ConPTY + PS5.1 下会抛错导致菜单被误跳过；Win32 是 Windows
@@ -99,7 +99,6 @@ public static class ClashConInV4 {
     foreach ($a in $Agents) {
         $items += [pscustomobject]@{ key = $a.key; label = "[$($a.key)] $($a.name)"; checked = $a.enabled; enabled = $a.enabled }
     }
-    $items += [pscustomobject]@{ key = ''; label = '开始部署'; checked = $true; enabled = $true }
     $cur = 0
     $width = $Host.UI.RawUI.WindowSize.Width
     $menuTop = $Host.UI.RawUI.CursorPosition.Y
@@ -108,19 +107,17 @@ public static class ClashConInV4 {
         # 输出重定向导致无法定位光标时退化为顺序打印（功能不变）
         for ($i = 0; $i -lt $items.Count; $i++) {
             try { [Console]::SetCursorPosition(0, $menuTop + $i) } catch {}
-            $isConfirm = $items[$i].key -eq ''
-            $prefix = if ($isConfirm) { '>' } else { ' ' }
             $mark = if ($items[$i].checked) { '▣' } else { '▢' }
             $label = $items[$i].label
             if (-not $items[$i].enabled) { $label += '（未检测到，不可选）' }
-            $text = "  $prefix $mark $label".PadRight($width - 1)
+            $text = "  $mark $label".PadRight($width - 1)
             if ($i -eq $cur) { Write-Host $text -ForegroundColor White -BackgroundColor DarkBlue }
             elseif (-not $items[$i].enabled) { Write-Host $text -ForegroundColor DarkGray }
             elseif ($items[$i].checked) { Write-Host $text -ForegroundColor Cyan }
             else { Write-Host $text -ForegroundColor DarkGray }
         }
         try { [Console]::SetCursorPosition(0, $menuTop + $items.Count) } catch {}
-        Write-Host ('  ↑/↓ 移动 · Enter 切换选中 · 「开始部署」回车确认 · Esc 跳过').PadRight($width - 1) -ForegroundColor DarkGray
+        Write-Host ('  ↑/↓ 移动 · 空格切换选中 · Enter 确认部署 · Esc 跳过').PadRight($width - 1) -ForegroundColor DarkGray
         $key = $null
         try {
             if (@($script:KeyQueue).Count -gt 0) {
@@ -139,7 +136,10 @@ public static class ClashConInV4 {
                 $deadline = [DateTime]::Now.AddSeconds($timeoutSec)
                 $key = 0
                 while ($key -eq 0) {
-                    if ([DateTime]::Now -gt $deadline) { return @() }
+                    if ([DateTime]::Now -gt $deadline) {
+                        Write-Host "（等待按键 $timeoutSec 秒超时，跳过部署）" -ForegroundColor DarkYellow
+                        return @()
+                    }
                     if ([ClashConInV4]::HasInput()) { $key = [ClashConInV4]::ReadKeyVk() }
                     else { Start-Sleep -Milliseconds 100 }
                 }
@@ -148,21 +148,25 @@ public static class ClashConInV4 {
                 $timeoutSec = if ($env:CLASH_PROXY_MENU_TIMEOUT) { [int]$env:CLASH_PROXY_MENU_TIMEOUT } else { 45 }
                 $deadline = [DateTime]::Now.AddSeconds($timeoutSec)
                 while (-not $Host.UI.RawUI.KeyAvailable) {
-                    if ([DateTime]::Now -gt $deadline) { return @() }
+                    if ([DateTime]::Now -gt $deadline) {
+                        Write-Host "（等待按键 $timeoutSec 秒超时，跳过部署）" -ForegroundColor DarkYellow
+                        return @()
+                    }
                     Start-Sleep -Milliseconds 100
                 }
                 $key = [int]($Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')).Key
             }
-        } catch { return @() }
+        } catch {
+            Write-Host "（菜单读键异常：$($_.Exception.Message)）" -ForegroundColor Red
+            return @()
+        }
         if ($null -eq $key) { return @() }
-        switch ($key) {  # VK 码：38=↑ 40=↓ 13=Enter 27=Esc
+        switch ($key) {  # VK 码：38=↑ 40=↓ 32=空格 13=Enter 27=Esc
             38 { $cur = ($cur - 1 + $items.Count) % $items.Count }
             40 { $cur = ($cur + 1) % $items.Count }
-            13 {  # agent 项切换选中（未检测到的不可选）；「开始部署」确认返回
-                if ($items[$cur].key -eq '') {
-                    return @($items | Where-Object { $_.key -and $_.checked -and $_.enabled } | ForEach-Object { $_.key })
-                }
-                if ($items[$cur].enabled) { $items[$cur].checked = -not $items[$cur].checked }
+            32 { if ($items[$cur].enabled) { $items[$cur].checked = -not $items[$cur].checked } }  # 空格切换选中
+            13 {  # Enter 任意位置直接确认部署（默认全选；空格取消过的项不部署）
+                return @($items | Where-Object { $_.key -and $_.checked -and $_.enabled } | ForEach-Object { $_.key })
             }
             27 { return @() }  # 跳过部署
         }
