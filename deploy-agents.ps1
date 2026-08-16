@@ -75,7 +75,9 @@ foreach ($t in $targets) {
       if ($s.src) {
         if (-not (Test-Path $s.src)) { Write-Error "本地 SKILL.md 不存在: $($s.src)"; exit 1 }
         Copy-Item $s.src $skillFile -Force
-      } elseif (-not (Test-Path $skillFile)) {
+      } else {
+        # 每次部署都重新拉取（SKILL.md 只有几 KB），避免 temp 缓存里是旧版
+        Remove-Item $skillFile -Force -ErrorAction SilentlyContinue
         try {
           Invoke-WebRequest -Uri $s.url -OutFile $skillFile -UseBasicParsing
           Write-Host "已下载 SKILL.md: $($s.url)" -ForegroundColor DarkGray
