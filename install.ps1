@@ -54,19 +54,31 @@ public static class ClashConIn {
         uint n; return GetNumberOfConsoleInputEvents(h, out n) && n > 0;
     }
     public static int ReadKeyVk() {
+        // 只读队列中已有的事件（绝不阻塞）：ReadConsoleInput 队列空时会阻塞等待，
+        // 会把用户后续按键吃掉。读到 KeyDown 返回 VK；只有 KeyUp/其他则返回 0，
+        // 由 PS 层继续轮询。
         IntPtr h = GetStdHandle(-10);
+        if (h == IntPtr.Zero || h == new IntPtr(-1)) return 0;
+        uint n;
+        if (!GetNumberOfConsoleInputEvents(h, out n) || n == 0) return 0;
         INPUT_RECORD r; uint read;
-        while (true) {
+        for (uint i = 0; i < n; i++) {
             if (!ReadConsoleInput(h, out r, 1, out read) || read == 0) return 0;
             if (r.EventType == 1 && r.KeyEvent.bKeyDown) return r.KeyEvent.wVirtualKeyCode;
         }
+        return 0;
     }
     public static void FlushInput() {
-        // 丢弃队列中所有残留事件（如执行命令的 Enter KeyUp、鼠标/焦点事件），
-        // 防止菜单刚显示就被残留事件误触发/读到空队列提前退出
+        // 丢弃队列中已有残留事件（如执行命令的 Enter KeyUp、鼠标/焦点事件），
+        // 防止菜单刚显示就被残留事件误触发/读到空队列提前退出。
+        // 注意：ReadConsoleInput 是阻塞调用，必须先查队列长度、只读已有事件数，
+        // 否则队列空时会阻塞等待并把用户后续按键全部吃掉（菜单卡死不显示）。
         IntPtr h = GetStdHandle(-10);
+        if (h == IntPtr.Zero || h == new IntPtr(-1)) return;
+        uint n;
+        if (!GetNumberOfConsoleInputEvents(h, out n) || n == 0) return;
         INPUT_RECORD r; uint read;
-        while (ReadConsoleInput(h, out r, 1, out read) && read > 0) { }
+        for (uint i = 0; i < n; i++) ReadConsoleInput(h, out r, 1, out read);
     }
 }
 '@ -ErrorAction Stop
