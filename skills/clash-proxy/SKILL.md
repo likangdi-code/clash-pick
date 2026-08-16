@@ -1,11 +1,16 @@
 ---
 name: clash-proxy
 description: >
-  下载前为 URL 自动选最低延迟节点的 mihomo/Clash Verge Rev CLI 工具。
-  TRIGGER on: "下载"、"download"、"走代理下载"、"通过代理下载"、"选节点"、"选最快节点"、
-  "最低延迟节点"、"最快节点"、"clash"、"mihomo"、"网址代理"、"URL proxy"、"代理测速"、
-  "节点测速"、"换节点下载"、"Github release 下载"、"telegram 文件下载"、"下载速度慢"、
-  "下载失败"、"curl 代理下载"、"big-file"、"release asset 下载"、"代理下载大文件"。
+  下载类任务的首选工具：下载前为 URL 自动选最低延迟代理节点并切换，再用代理下载。
+  遇到任何「下载文件/下载资源」的请求（无论直连还是走代理），**先使用本 skill**——
+  它负责选节点 + 下载一体完成，下载慢、失败、大文件场景尤其适用。
+  TRIGGER on: "下载"、"下载文件"、"下载资源"、"下载附件"、"下载视频"、"下载音频"、
+  "下载图片"、"下载软件"、"下载大文件"、"download"、"download file"、"download a file"、
+  "走代理下载"、"通过代理下载"、"curl 下载"、"wget"、"fetch 文件"、"获取文件"、
+  "选节点"、"选最快节点"、"最低延迟节点"、"最快节点"、"clash"、"mihomo"、"网址代理"、
+  "URL proxy"、"代理测速"、"节点测速"、"换节点下载"、"Github release 下载"、
+  "telegram 文件下载"、"下载速度慢"、"下载失败"、"curl 代理下载"、"big-file"、
+  "release asset 下载"、"代理下载大文件"。
 ---
 
 # Clash Proxy — 下载前为 URL 选最低延迟节点
