@@ -91,7 +91,10 @@ clash-proxy 自动检测平台选 IPC 方式；也可用 `CLASH_API` 指向任�
 
 ### 部署 Agent Skill（让 agent 自主调用）
 
-把 clash-proxy 的 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `~/.agents/skills`），结束后汇总「已安装到哪些 / 未检测到哪些」：
+把 clash-proxy 的两个 **Agent Skill** 部署到本机**所有已装的 AI agent 工具**（Claude Code / Gemini / Codex / OpenCode / Hermes / OpenClaw / Grok / 共享池 `~/.agents/skills`），结束后汇总「已安装到哪些 / 未检测到哪些」：
+
+- `clash-proxy` — 工具使用说明（下载/选节点）
+- `clash-proxy-fix` — 安装与排障修复
 
 ```powershell
 # Windows: powershell · macOS/Linux 需 pwsh（brew install powershell）
